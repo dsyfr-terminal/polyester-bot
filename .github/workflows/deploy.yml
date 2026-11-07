@@ -21,6 +21,7 @@ jobs:
           HOST: ${{ vars.INSTABOX_HOST }}
           PORT: ${{ vars.INSTABOX_PORT }}
         run: |
+          set -euo pipefail
           install -m 700 -d ~/.ssh
           printf '%s\n' "$INSTABOX_SSH_KEY" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
@@ -32,6 +33,7 @@ jobs:
           PORT: ${{ vars.INSTABOX_PORT }}
           USER: ${{ vars.INSTABOX_USER }}
         run: |
+          set -euo pipefail
           tar czf - bot deploy | ssh -p "$PORT" "$USER@$HOST" \
             'rm -rf ~/polyester-deploy && mkdir -p ~/polyester-deploy && tar xzf - -C ~/polyester-deploy'
 
@@ -41,6 +43,7 @@ jobs:
           PORT: ${{ vars.INSTABOX_PORT }}
           USER: ${{ vars.INSTABOX_USER }}
         run: |
+          set -euo pipefail
           ssh -p "$PORT" "$USER@$HOST" 'bash ~/polyester-deploy/deploy/deploy.sh'
 
       - name: Verify
@@ -49,5 +52,6 @@ jobs:
           PORT: ${{ vars.INSTABOX_PORT }}
           USER: ${{ vars.INSTABOX_USER }}
         run: |
+          set -euo pipefail
           ssh -p "$PORT" "$USER@$HOST" \
             'systemctl is-active polyester-bot && journalctl -u polyester-bot -n 15 --no-pager'
