@@ -1,0 +1,53 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: polyester-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          INSTABOX_SSH_KEY: ${{ secrets.INSTABOX_SSH_KEY }}
+          HOST: ${{ vars.INSTABOX_HOST }}
+          PORT: ${{ vars.INSTABOX_PORT }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$INSTABOX_SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p "$PORT" "$HOST" >> ~/.ssh/known_hosts
+
+      - name: Ship code to instabox
+        env:
+          HOST: ${{ vars.INSTABOX_HOST }}
+          PORT: ${{ vars.INSTABOX_PORT }}
+          USER: ${{ vars.INSTABOX_USER }}
+        run: |
+          tar czf - bot deploy | ssh -p "$PORT" "$USER@$HOST" \
+            'rm -rf ~/polyester-deploy && mkdir -p ~/polyester-deploy && tar xzf - -C ~/polyester-deploy'
+
+      - name: Deploy and restart
+        env:
+          HOST: ${{ vars.INSTABOX_HOST }}
+          PORT: ${{ vars.INSTABOX_PORT }}
+          USER: ${{ vars.INSTABOX_USER }}
+        run: |
+          ssh -p "$PORT" "$USER@$HOST" 'bash ~/polyester-deploy/deploy/deploy.sh'
+
+      - name: Verify
+        env:
+          HOST: ${{ vars.INSTABOX_HOST }}
+          PORT: ${{ vars.INSTABOX_PORT }}
+          USER: ${{ vars.INSTABOX_USER }}
+        run: |
+          ssh -p "$PORT" "$USER@$HOST" \
+            'systemctl is-active polyester-bot && journalctl -u polyester-bot -n 15 --no-pager'

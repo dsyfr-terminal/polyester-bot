@@ -1,0 +1,18 @@
+# secrets - live only on the VM, never committed
+bot/.env
+bot/.session
+
+# runtime state
+bot/volume_state.json
+bot/hot_pairs.json
+*.bak.*
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# editors / os
+.DS_Store
+*.log
