@@ -571,7 +571,7 @@ async def main():
                         if pos["qty"] > 0:
                             pos["qty0"] = pos["qty"]
                             pos["buy_px"] = avg if avg > 0 else pos["buy_px"]
-                            alert(f"{sym}: BUY filled {pos['qty']} @ {pos['buy_px']}")
+                            alert(f"{sym}: BUY filled {pos['qty']} @ {pos['buy_px']}", priority=True)
                             state = "selling"
                         else:
                             alert(f"{sym}: buy ended unfilled ({st})")
@@ -589,7 +589,7 @@ async def main():
                         if pos["qty"] > 0:
                             pos["qty0"] = pos["qty"]
                             pos["buy_px"] = avg if avg > 0 else pos["buy_px"]
-                            alert(f"{sym}: BUY filled {pos['qty']} @ {pos['buy_px']}")
+                            alert(f"{sym}: BUY filled {pos['qty']} @ {pos['buy_px']}", priority=True)
                             state = "selling"
                         else:
                             state = "idle"
