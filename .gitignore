@@ -1,10 +1,14 @@
 # secrets - live only on the VM, never committed
 bot/.env
 bot/.session
+/.env
+/.session
 
 # runtime state
 bot/volume_state.json
 bot/hot_pairs.json
+/volume_state.json
+/hot_pairs.json
 *.bak.*
 
 # python
@@ -12,6 +16,13 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+*.egg-info/
+build/
+dist/
+
+# node
+node_modules/
+*.tgz
 
 # editors / os
 .DS_Store

@@ -7,12 +7,15 @@ from decimal import Decimal, ROUND_FLOOR
 
 from polyester import POLYESTER_TESTNET_ENVIRONMENT, AsyncPolyester
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+if __package__:
+    from .paths import env_file
+else:
+    from paths import env_file
 
 
 def load_env():
     try:
-        with open(os.path.join(HERE, ".env"), encoding="utf-8") as f:
+        with open(env_file(), encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:

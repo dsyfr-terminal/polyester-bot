@@ -5,7 +5,11 @@ import subprocess
 import sys
 import time
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+if __package__:
+    from .paths import HERE
+else:
+    from paths import HERE
+
 print("[supervisor] gap hunter supervisor started", flush=True)
 
 while True:

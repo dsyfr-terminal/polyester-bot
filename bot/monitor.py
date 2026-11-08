@@ -18,6 +18,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -28,12 +29,20 @@ import nacl.signing
 from polyester import POLYESTER_TESTNET_ENVIRONMENT, AsyncPolyester
 from polyester.models import ClientOrderId
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+if __package__:
+    from .paths import HERE, env_file, state_file
+else:
+    from paths import HERE, env_file, state_file
 
 
 def load_env():
     try:
-        with open(os.path.join(HERE, ".env"), encoding="utf-8") as f:
+        with open(env_file(), encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
@@ -45,17 +54,11 @@ def load_env():
 
 load_env()
 
-import sys  # noqa: E402
-try:
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
-
 API = "https://api.testnet.polyester.com"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
-KEY = os.environ["POLYESTER_API_KEY_ID"]
-_SK = nacl.signing.SigningKey(bytes.fromhex(os.environ["POLYESTER_ED25519_SEED"]))
+KEY = os.environ.get("POLYESTER_API_KEY_ID", "")
+_SK = nacl.signing.SigningKey(bytes.fromhex(os.environ.get("POLYESTER_ED25519_SEED", "0" * 64)))
 ACCOUNT = os.environ.get("POLYESTER_ACCOUNT_ID", "MUYiAxF1Kkv")
 
 QUOTE = "USDT"
@@ -446,7 +449,7 @@ async def main():
 
         vol, next_10k = None, None
         try:
-            with open(os.path.join(HERE, "volume_state.json"), encoding="utf-8") as f:
+            with open(state_file("volume_state.json"), encoding="utf-8") as f:
                 s = json.load(f)
             vol = Decimal(s["total"])
             next_10k = int(s["next_milestone"])
@@ -474,7 +477,7 @@ async def main():
 
         def save_vol():
             try:
-                with open(os.path.join(HERE, "volume_state.json"), "w",
+                with open(state_file("volume_state.json"), "w",
                           encoding="utf-8") as f:
                     json.dump({"total": str(vol), "next_milestone": next_10k}, f)
             except OSError:
@@ -758,8 +761,18 @@ async def main():
         await c.aclose()
 
 
-if __name__ == "__main__":
+def cli():
+    missing = [k for k in ("POLYESTER_API_KEY_ID", "POLYESTER_ED25519_SEED")
+               if not os.environ.get(k, "").strip()]
+    if missing:
+        print("missing credentials: " + ", ".join(missing)
+              + " (put them in .env next to the bot or in the environment)")
+        sys.exit(1)
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
+
+
+if __name__ == "__main__":
+    cli()

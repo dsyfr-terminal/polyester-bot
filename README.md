@@ -30,12 +30,50 @@ scan pairs → find gap → BUY at the bid → ASK under the offer → CYCLE DON
 - **Volume tracker** — every cycle adds to `volume_state.json`, milestone alert
   every 10,000 USDT.
 
+## Install
+
+**npm** — the wrapper builds its own Python environment on first run:
+
+```bash
+npm install -g polyester-bot
+polyester-bot
+```
+
+**pip** — straight from the release tag:
+
+```bash
+pip install "polyester-bot @ git+https://github.com/natanim-kemal/polyester-bot.git@v1.0.0"
+polyester-bot
+```
+
+**source**:
+
+```bash
+git clone https://github.com/natanim-kemal/polyester-bot.git
+cd polyester-bot
+pip install -e .
+```
+
+Python 3.11 or newer. The bot reads its credentials from a `.env` in the
+directory you run it in — copy `bot/.env.example` to `.env` and fill it in:
+
+```
+POLYESTER_API_KEY_ID=...
+POLYESTER_ED25519_SEED=...
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_ID=...
+```
+
+`POLYESTER_STATE_DIR` moves that directory somewhere else. The bot trades
+**testnet** funds only.
+
 ## Project Structure
 
 ```
 ├── bot/
 │   ├── monitor.py            # the bot: scanner, executor, bail-out rule
 │   ├── polyester_farm.py     # season volume, daily paper-asset claim
+│   ├── paths.py              # where .env and the state files live
 │   ├── check_orders.py       # print open orders
 │   ├── cancel_all.py         # cancel every open order
 │   ├── status_all.py         # open orders + hot pairs
@@ -44,6 +82,7 @@ scan pairs → find gap → BUY at the bid → ASK under the offer → CYCLE DON
 │   ├── hunter_forever.py     # run monitor.py in a loop
 │   ├── kill_bot.py           # stop the bot
 │   └── .env.example          # every setting, no secrets
+├── bin/                      # npm wrapper: polyester-bot, polyester-farm
 ├── deploy/
 │   ├── polyester-bot.service    # systemd unit for the bot
 │   ├── polyester-claim.service  # daily paper-asset claim
@@ -51,10 +90,13 @@ scan pairs → find gap → BUY at the bid → ASK under the offer → CYCLE DON
 │   └── deploy.sh                # install code + units, restart
 ├── tests/
 │   ├── test_sell_loop.py        # regression test for the cancel storm
-│   └── test_freeze_detect.py    # detects a paused sandbox from clock skew
+│   ├── test_freeze_detect.py    # detects a paused sandbox from clock skew
+│   └── test_paths.py            # .env and state file resolution
 ├── .github/workflows/
 │   ├── deploy.yml               # push to main → deploy to the sandbox
 │   └── keepalive.yml            # every 10 min: keep the sandbox awake
+├── pyproject.toml            # the Python package (pip install .)
+├── package.json              # the npm package (npm install -g polyester-bot)
 └── polyester.jpg
 ```
 
@@ -80,6 +122,24 @@ The real file stays on the machine and is gitignored — a deploy never overwrit
 Alerts go to **Telegram** (every alert) and **Discord** if `DISCORD_WEBHOOK_URL`
 is set. Everything is also printed to the journal.
 
+Every Telegram alert is three lines — the action, the market with its spread,
+then the money:
+
+```
+🟢 BUY
+BTC-USDT | gap 0.85% (net +0.65%) | 0.0123 @ 41,250.00 | depth 12,450.00/12,556.00
+expected +8.20 USDT | USDT 3,094.10 | BTC 0.0123
+```
+
+```
+🔵 ASK
+ARB-USDT | gap 0.118% | 8,946.0 @ 0.167 | bought @ 0.167
+expected +1.21 USDT | USDT 2,983.94 | ARB 8,946.35
+```
+
+`🟡 VOLUME BUY`, `✅ BUY FILLED`, `✅ CYCLE DONE`, `🏆 MILESTONE`, `❄️ FREEZE
+DETECTED` and `⚠️` warnings use the same shape.
+
 ## Deploy
 
 Push to `main` → GitHub Actions → SSH → `deploy/deploy.sh` → systemd restart → verify.
@@ -93,7 +153,7 @@ Push to `main` → GitHub Actions → SSH → `deploy/deploy.sh` → systemd res
 
 Secrets, `.session` and `volume_state.json` are never touched by a deploy.
 
-`keepalive.yml` runs every 20 minutes and opens an SSH session: the sandbox pauses
+`keepalive.yml` runs every 10 minutes and opens an SSH session: the sandbox pauses
 itself after 30 idle minutes, and SSH traffic counts as activity, so it stays up.
 It also restarts the bot when its heartbeat file (`/var/tmp/polyester.heartbeat`)
 goes stale, which catches a bot that is alive but wedged.
@@ -139,7 +199,16 @@ exchange keeps the position instead of forgetting it.
 python tests/test_freeze_detect.py
 ```
 
-Both run in CI on every push, before anything is deployed.
+`tests/test_paths.py` checks where the bot looks for its `.env` and its state
+files: the working directory wins, the script directory is the fallback, and an
+existing state file is never moved.
+
+```bash
+python tests/test_paths.py
+```
+
+All three run in CI on every push, before anything is deployed, together with a
+build of the Python package and a smoke test of its entry point.
 
 ## Ops
 

@@ -10,6 +10,26 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the wheel
+        run: |
+          python3 -m pip install --upgrade build
+          python3 -m build
+
+      - name: Install it and smoke test the entry point
+        run: |
+          python3 -m pip install dist/polyester_bot-*.whl
+          if polyester-bot 2>&1 | grep -q "missing credentials"; then
+            echo "entry point ok"
+          else
+            echo "entry point failed"
+            exit 1
+          fi
+
   deploy:
     runs-on: ubuntu-latest
     steps:
@@ -19,6 +39,7 @@ jobs:
         run: |
           python3 tests/test_sell_loop.py
           python3 tests/test_freeze_detect.py
+          python3 tests/test_paths.py
 
       - name: Configure SSH
         env:

@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "polyester-bot"
+version = "1.0.0"
+description = "Polyester testnet gap hunter: buys orderbook gaps, asks them back, alerts on Telegram"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "natanim-kemal" }]
+keywords = ["polyester", "testnet", "trading", "market-making", "bot", "telegram"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+dependencies = [
+    "polyester-sdk>=0.6.0,<0.7",
+    "pynacl>=1.5",
+    "eth-account>=0.13",
+]
+
+[project.urls]
+Homepage = "https://github.com/natanim-kemal/polyester-bot"
+Repository = "https://github.com/natanim-kemal/polyester-bot"
+Issues = "https://github.com/natanim-kemal/polyester-bot/issues"
+
+[project.scripts]
+polyester-bot = "polyester_bot.monitor:cli"
+polyester-farm = "polyester_bot.polyester_farm:main"
+
+[tool.setuptools]
+packages = ["polyester_bot"]
+
+[tool.setuptools.package-dir]
+polyester_bot = "bot"

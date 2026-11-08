@@ -1,0 +1,42 @@
+{
+  "name": "polyester-bot",
+  "version": "1.0.0",
+  "description": "Polyester testnet gap hunter: buys orderbook gaps, asks them back, alerts on Telegram",
+  "keywords": [
+    "polyester",
+    "testnet",
+    "trading",
+    "market-making",
+    "bot",
+    "telegram",
+    "crypto"
+  ],
+  "homepage": "https://github.com/natanim-kemal/polyester-bot",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/natanim-kemal/polyester-bot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/natanim-kemal/polyester-bot/issues"
+  },
+  "license": "MIT",
+  "author": "natanim-kemal",
+  "bin": {
+    "polyester-bot": "bin/polyester-bot.js",
+    "polyester-farm": "bin/polyester-farm.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "bin/",
+    "install.js",
+    "pyproject.toml",
+    "bot/*.py",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=14"
+  }
+}

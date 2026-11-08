@@ -3,13 +3,16 @@ import json
 import os
 import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-
-import check_orders  # noqa: F401  (prints open orders)
+if __package__:
+    from . import check_orders  # noqa: F401
+    from .paths import state_file
+else:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import check_orders  # noqa: F401
+    from paths import state_file
 
 try:
-    with open(os.path.join(HERE, "hot_pairs.json"), encoding="utf-8") as f:
+    with open(state_file("hot_pairs.json"), encoding="utf-8") as f:
         hot = json.load(f)
     if hot:
         print("hot pairs:", json.dumps(hot))

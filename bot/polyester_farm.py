@@ -26,6 +26,11 @@ import urllib.error
 import urllib.request
 import uuid
 
+if __package__:
+    from .paths import env_file, state_file
+else:
+    from paths import env_file, state_file
+
 API = "https://api.testnet.polyester.com"
 SITE = "https://testnet.polyester.com"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -35,8 +40,7 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 def load_env():
     """Load KEY=VALUE pairs from .env next to this script (no override)."""
     try:
-        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               ".env"), encoding="utf-8") as f:
+        with open(env_file(), encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
@@ -145,7 +149,7 @@ def get_token():
     jwt = os.environ.get("POLYESTER_SESSION_JWT")
     if jwt:
         return jwt.strip()
-    cache = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".session")
+    cache = state_file(".session")
     try:
         with open(cache, encoding="utf-8") as f:
             saved = json.load(f)
