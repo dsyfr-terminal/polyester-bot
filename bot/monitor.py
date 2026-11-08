@@ -75,6 +75,16 @@ PERSIST_SECONDS = float(os.environ.get("PERSIST_SECONDS", "60"))
 BETTER_ASKS_LIMIT = int(os.environ.get("BETTER_ASKS_LIMIT", "2"))
 BUY_TIMEOUT_SECONDS = float(os.environ.get("BUY_TIMEOUT_SECONDS", "180"))
 FEE_BUFFER = Decimal("1.0015")        # fee reserve headroom when sizing buys
+FREEZE_SECONDS = 60.0                 # wall-clock jump = the sandbox was frozen
+
+
+def frozen_seconds(wall, mono, last_wall, last_mono):
+    """Seconds the VM spent frozen: wall clock advanced but the guest did not run.
+
+    A paused sandbox stops the guest kernel, so CLOCK_MONOTONIC freezes while
+    the wall clock keeps going. The difference is the freeze duration.
+    """
+    return (wall - last_wall) - (mono - last_mono)
 
 TERMINAL = {"filled", "canceled", "rejected", "expired"}
 
@@ -322,6 +332,8 @@ async def base_balance(c, sym, m):
 
 
 async def main():
+    # baseline for freeze detection (wall clock vs guest monotonic clock)
+    last_wall, last_mono = time.time(), time.monotonic()
     # tolerate WiFi blips at boot: retry client + catalog hydration
     c = None
     for attempt in range(12):
@@ -355,32 +367,37 @@ async def main():
                     "scale": int(p.get("baseQuantityScale") or 8)}
                 for s, p in pairs.items()}
 
-        # never carry orphaned orders across runs: sweep first, then adopt
-        for sweep in range(2):
-            try:
-                await c.orders.cancel_all(request_id=f"gap1-boot-{sweep}-"
-                                          + uuid.uuid4().hex[:10])
-                await asyncio.sleep(4)
-                if not rest_open_orders().get("orders", []):
-                    break
-                if sweep == 1:
-                    alert(f"WARNING: {len(rest_open_orders().get('orders', []))} "
-                          f"order(s) still open after startup sweep")
-            except Exception as e:
-                print("startup sweep failed:", repr(e), flush=True)
+        async def resync(tag):
+            """Drop stale orders, re-read balances. Returns what we hold."""
+            for sweep in range(2):
+                try:
+                    await c.orders.cancel_all(request_id=f"{tag}-sweep-{sweep}-"
+                                              + uuid.uuid4().hex[:10])
+                    await asyncio.sleep(4)
+                    if not rest_open_orders().get("orders", []):
+                        break
+                    if sweep == 1:
+                        alert(f"WARNING: {len(rest_open_orders().get('orders', []))} "
+                              f"order(s) still open after sweep")
+                except Exception as e:
+                    print("sweep failed:", repr(e), flush=True)
 
-        adopt = []
-        for attempt in range(24):  # up to ~2 min: WiFi may still be coming back
-            try:
-                for row in rest_balances():
-                    sym = row.get("symbol", "")
-                    if sym != QUOTE and Decimal(row.get("trading") or 0) > 0 \
-                            and (sym + "-" + QUOTE) in pairs:
-                        adopt.append((sym + "-" + QUOTE, Decimal(row["trading"])))
-                break
-            except Exception as e:
-                print(f"balances read retry {attempt + 1}/24: {repr(e)}", flush=True)
-                await asyncio.sleep(5)
+            held = []
+            for attempt in range(24):  # up to ~2 min: WiFi may still be coming back
+                try:
+                    for row in rest_balances():
+                        sym = row.get("symbol", "")
+                        if sym != QUOTE and Decimal(row.get("trading") or 0) > 0 \
+                                and (sym + "-" + QUOTE) in pairs:
+                            held.append((sym + "-" + QUOTE, Decimal(row["trading"])))
+                    break
+                except Exception as e:
+                    print(f"balances read retry {attempt + 1}/24: {repr(e)}", flush=True)
+                    await asyncio.sleep(5)
+            return held
+
+        # never carry orphaned orders across runs: sweep first, then adopt
+        adopt = await resync("gap1-boot")
 
         alert("Gap hunter online. Adopting: "
               + (", ".join(f"{s} {q}" for s, q in adopt) or "nothing")
@@ -462,6 +479,17 @@ async def main():
 
         while True:
             now = time.time()
+            mono = time.monotonic()
+            frozen = frozen_seconds(now, mono, last_wall, last_mono)
+            last_wall, last_mono = now, mono
+            if frozen > FREEZE_SECONDS:
+                # the sandbox was paused: our orders and balances are stale
+                alert(f"FREEZE DETECTED: sandbox paused for {frozen / 60:.1f} min "
+                      f"-> re-syncing orders and balances", priority=True)
+                adopt = await resync(f"gap1-freeze-{int(now)}")
+                adopt_q = list(adopt)
+                pos, state = {}, "idle"
+                next_scan = 0.0
             try:
                 if state == "idle" and adopt_q:
                     sym, qty = adopt_q.pop(0)

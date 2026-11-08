@@ -1,0 +1,52 @@
+name: keepalive
+
+on:
+  schedule:
+    # every 10 minutes: instabox counts terminal/SSH traffic as activity, so the
+    # sandbox never looks idle and never self-pauses (free plan: fixed 30m idle)
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: polyester-keepalive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure SSH
+        env:
+          INSTABOX_SSH_KEY: ${{ secrets.INSTABOX_SSH_KEY }}
+          HOST: ${{ vars.INSTABOX_HOST }}
+          PORT: ${{ vars.INSTABOX_PORT }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$INSTABOX_SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          for attempt in 1 2 3; do
+            ssh-keyscan -p "$PORT" "$HOST" >> ~/.ssh/known_hosts 2>/dev/null && break
+            echo "ssh-keyscan attempt $attempt failed, retrying"
+            sleep 10
+          done
+          grep -qE "^[^#]*${HOST}" ~/.ssh/known_hosts
+
+      - name: Keep the sandbox awake
+        env:
+          HOST: ${{ vars.INSTABOX_HOST }}
+          PORT: ${{ vars.INSTABOX_PORT }}
+          USER: ${{ vars.INSTABOX_USER }}
+        run: |
+          set -uo pipefail
+          for attempt in 1 2 3 4 5; do
+            if ssh -o BatchMode=yes -o ConnectTimeout=20 -p "$PORT" "$USER@$HOST" \
+              'date -u > /var/tmp/keepalive.last; s=$(systemctl is-active polyester-bot || true); if [ "$s" != active ]; then sudo systemctl restart polyester-bot; sleep 10; s=$(systemctl is-active polyester-bot || true); fi; echo "bot=$s"; [ "$s" = active ]'; then
+              echo "keepalive ok (attempt $attempt)"
+              exit 0
+            fi
+            echo "ssh attempt $attempt failed (machine may be waking up), retrying"
+            sleep 20
+          done
+          echo "keepalive FAILED: sandbox unreachable" >&2
+          exit 1

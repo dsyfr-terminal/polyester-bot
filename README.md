@@ -1,84 +1,67 @@
 <div align="center">
-  <img src="polyester.jpg" alt="Polyester" width="180">
-  <h1>Polyester Gap Hunter</h1>
-  <p>Market-making bot for the <a href="https://polyester.com">Polyester</a> testnet.<br>
-  Buys the bid, asks under the offer, manages the ask with a bail-out rule,
-  and ships every step to Telegram, ntfy and the journal.</p>
-</div>
 
----
+<img src="polyester.jpg" alt="Polyester" width="120" height="120" style="border-radius:50%; object-fit:cover;" />
+
+# ✦ Polyester Gap Hunter
+
+**Testnet market-making bot · one position at a time · Telegram alerts · GitHub Actions deploy**
+
+![Python](https://img.shields.io/badge/Python-3.13-blue?logo=python)
+![asyncio](https://img.shields.io/badge/asyncio-trading-2b5f8a?logo=asyncio)
+![systemd](https://img.shields.io/badge/systemd-service-81dafb?logo=systemd)
+![GitHub Actions](https://img.shields.io/badge/deploy-GitHub_Actions-2088ff?logo=github-actions)
+
+</div>
 
 ## How it works
 
-The bot runs one position at a time and runs it as a complete cycle:
-
 ```
-scan every USDT pair  ->  find a gap  ->  BUY at the bid  ->  ASK under the offer  ->  CYCLE DONE
+scan pairs → find gap → BUY at the bid → ASK under the offer → CYCLE DONE
 ```
 
-### Gap mode
+- **Gap mode** — buys the bid, asks one tick under the offer (maker on both legs).
+  A gap must clear the `0.20%` round-trip fee, so `GAP_MIN_PCT` defaults to `0.21%`.
+- **Volume fallback** — when nothing clears the fee bar, the deepest tightest pair is
+  cycled anyway to keep season volume up.
+- **Bail-out rule** — if more than `BETTER_ASKS_LIMIT` better asks sit under our
+  price for `PERSIST_SECONDS`, the ask is cancelled and re-placed under them
+  (maker exit, even at a loss). It then rests until the rule fires again.
+- **One position** — never stacks trades; the exception is a `>20%` 24h mover.
+- **Volume tracker** — every cycle adds to `volume_state.json`, milestone alert
+  every 10,000 USDT.
 
-Every `SCAN_SECONDS` the bot pulls the top-of-book for all USDT pairs and picks
-the widest spread whose depth clears `DEPTH_MIN_USD`. It buys at the bid and
-asks one tick under the offer, so both legs are maker fills. The round trip
-costs `0.20%` in fees, so a gap has to clear `GAP_MIN_PCT` (default `0.21%`)
-before the bot takes it.
-
-### Volume fallback mode
-
-When no pair clears the fee bar, the bot still cycles the deepest, tightest
-liquid pair. It loses roughly `1-3 USDT` per cycle and earns about `4,900 USDT`
-of season volume per cycle - intentional, the season leaderboard counts volume,
-not profit. `VOLUME_BASELINE` in `.env` seeds the tracker when there is no
-`volume_state.json` yet.
-
-### The bail-out rule
-
-While our ask rests, if more than `BETTER_ASKS_LIMIT` better (lower) ask levels
-sit under our price for more than `PERSIST_SECONDS`, the bot cancels and
-re-asks one tick under the current best ask - a maker exit, even at a loss.
-The re-ask then rests until the rule fires again.
-
-### One-position rule
-
-The bot never stacks trades. The exception is a hot override: if the candidate
-pair moved more than `20%` in 24h, it cancels what it holds and takes the new
-position anyway.
-
-### Season volume tracker
-
-Every completed cycle adds its volume to `volume_state.json` and posts a
-milestone alert every `10,000 USDT`.
-
-## Repository layout
+## Project Structure
 
 ```
-.
-├── bot/                 everything that runs on the machine (same folder = same .env)
-│   ├── monitor.py           the bot: scanner, executor, bail-out rule
-│   ├── polyester_farm.py    season volume / checkpoint helper
-│   ├── big_buy.py           one-off market buy
-│   ├── cancel_all.py        cancel every open order
-│   ├── check_orders.py      print open orders
-│   ├── hunter_forever.py    run monitor.py in a loop
-│   ├── kill_bot.py          stop the bot
-│   ├── scan_spread.py       print spreads across pairs
-│   ├── status_all.py        open orders + hot pairs
-│   └── .env.example         every setting, no secrets
+├── bot/
+│   ├── monitor.py            # the bot: scanner, executor, bail-out rule
+│   ├── polyester_farm.py     # season volume, daily paper-asset claim
+│   ├── check_orders.py       # print open orders
+│   ├── cancel_all.py         # cancel every open order
+│   ├── status_all.py         # open orders + hot pairs
+│   ├── scan_spread.py        # spread of every pair
+│   ├── big_buy.py            # one-off market buy
+│   ├── hunter_forever.py     # run monitor.py in a loop
+│   ├── kill_bot.py           # stop the bot
+│   └── .env.example          # every setting, no secrets
 ├── deploy/
-│   ├── polyester-bot.service systemd unit
-│   └── deploy.sh            rsync code to the VM and restart the service
+│   ├── polyester-bot.service    # systemd unit for the bot
+│   ├── polyester-claim.service  # daily paper-asset claim
+│   ├── polyester-claim.timer    # 00:10 UTC, persistent
+│   └── deploy.sh                # install code + units, restart
 ├── tests/
-│   └── test_sell_loop.py    regression test for the ask/cancel storm
-├── .github/workflows/deploy.yml
+│   ├── test_sell_loop.py        # regression test for the cancel storm
+│   └── test_freeze_detect.py    # detects a paused sandbox from clock skew
+├── .github/workflows/
+│   ├── deploy.yml               # push to main → deploy to the sandbox
+│   └── keepalive.yml            # every 10 min: keep the sandbox awake
 └── polyester.jpg
 ```
 
 ## Configuration
 
-`bot/.env` holds the credentials and the tuning. `bot/.env.example` lists every
-key with its default. The real file stays on the target machine and is
-gitignored - a deploy never overwrites it.
+`bot/.env` holds the credentials and tuning; `bot/.env.example` lists every key.
+The real file stays on the machine and is gitignored — a deploy never overwrites it.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -90,48 +73,15 @@ gitignored - a deploy never overwrites it.
 | `BETTER_ASKS_LIMIT` | `2` | how many better asks trigger the bail-out |
 | `BUY_TIMEOUT_SECONDS` | `180` | cancel an unfilled buy after this long |
 | `FALLBACK_*` | see example | volume fallback mode |
-| `VOLUME_BASELINE` | `57000` | season volume to start from when no state file exists |
+| `VOLUME_BASELINE` | `57000` | season volume to start from with no state file |
 
-Alerts go out over Telegram (every alert), ntfy (routine alerts are capped at
-one per minute because the free tier rate-limits bursts) and Discord if
-`DISCORD_WEBHOOK_URL` is set. Everything is also printed to the journal.
+Alerts go to **Telegram** (every alert), **ntfy** (routine alerts capped at one per
+minute — the free tier rate-limits bursts) and **Discord** if `DISCORD_WEBHOOK_URL`
+is set. Everything is also printed to the journal.
 
-## Running it
+## Deploy
 
-On the target machine:
-
-```bash
-cd /data/workspace/polyester
-.venv/bin/python monitor.py
-```
-
-As a service:
-
-```bash
-sudo systemctl start polyester-bot
-journalctl -u polyester-bot -f
-```
-
-## Daily claim
-
-`deploy/polyester-claim.timer` claims the daily paper asset at **00:10 UTC**.
-`Persistent=true`, so a run missed while the machine was stopped happens on
-the next boot. Whatever the claim pays out arrives as extra balances, which
-the bot adopts and sells back into USDT before it looks for the next gap.
-
-```bash
-systemctl list-timers polyester-claim.timer
-journalctl -u polyester-claim.service
-```
-
-## Deploying
-
-`main` is deployed to the instabox sandbox by GitHub Actions: the workflow
-pushes `bot/` and `deploy/` over SSH, runs `deploy/deploy.sh` on the machine
-(which rsyncs the code, reinstalls the systemd unit and restarts the service)
-and then verifies the service is active.
-
-Repository secrets and variables:
+Push to `main` → GitHub Actions → SSH → `deploy/deploy.sh` → systemd restart → verify.
 
 | Name | Kind | Value |
 | --- | --- | --- |
@@ -140,29 +90,39 @@ Repository secrets and variables:
 | `INSTABOX_PORT` | variable | `2222` |
 | `INSTABOX_USER` | variable | sandbox user |
 
-Secrets, `.session` and `volume_state.json` are excluded from the rsync, so a
-deploy never disturbs live credentials or the season volume counter.
+Secrets, `.session` and `volume_state.json` are never touched by a deploy.
 
-To deploy by hand from this machine:
+`keepalive.yml` runs every 10 minutes and opens an SSH session: the sandbox pauses
+itself after 30 idle minutes, and SSH traffic counts as activity, so it stays up.
+The bot also detects a freeze (wall-clock jump) and re-syncs balances and orders
+instead of acting on stale state.
+
+## Daily claim
+
+`polyester-claim.timer` claims the daily paper asset at **00:10 UTC** with
+`Persistent=true`, so a run missed while the machine was down happens on next boot.
+Whatever it pays out arrives as extra balances, which the bot adopts and sells back
+into USDT before looking for the next gap.
 
 ```bash
-./deploy/deploy.sh          # on the VM, with the repo checked out
+systemctl list-timers polyester-claim.timer
+journalctl -u polyester-claim.service
 ```
 
 ## Tests
 
-`tests/test_sell_loop.py` replays the sell state machine against a fake
-exchange. It reproduces the bug where the bot cancelled the ask it had just
-placed - the `canceling` flag was never cleared once the order reached a
-terminal state, so every re-ask was cancelled again on the next poll.
+`tests/test_sell_loop.py` replays the sell state machine against a fake exchange.
+It reproduces the bug where the bot cancelled the ask it had just placed — the
+`canceling` flag was never cleared once the order reached a terminal state, so
+every re-ask was cancelled again on the next poll.
 
 ```bash
 python tests/test_sell_loop.py
 ```
 
-It exits non-zero if the bot cancels more than once per bail-out.
+Exits non-zero if the bot cancels more than once per bail-out.
 
-## Ops scripts
+## Ops
 
 | Script | What it does |
 | --- | --- |
@@ -174,11 +134,16 @@ It exits non-zero if the bot cancels more than once per bail-out.
 | `hunter_forever.py` | keep `monitor.py` running |
 | `kill_bot.py` | stop the bot processes |
 
-## Notes
+## Remote / Links
 
-- The bot trades **testnet** funds (`api.testnet.polyester.com`).
-- The sandbox network is flaky. The bot retries on boot, cancels orphaned
-  orders at startup and treats balances as the source of truth for what it
-  still holds.
-- `polyester_farm.py` talks to the Polyester website behind Cloudflare, so it
-  sends browser-like headers and reuses the session in `.session`.
+- GitHub: [@natanim-kemal](https://github.com/natanim-kemal)
+- Telegram: [@phnatanim](https://t.me/phnatanim)
+- Email: reachnatanim@gmail.com
+
+---
+
+<div align="center">
+
+Built for the <a href="https://polyester.com">Polyester</a> testnet by <a href="https://github.com/natanim-kemal">@natanim-kemal</a>
+
+</div>
