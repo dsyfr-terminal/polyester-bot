@@ -72,6 +72,8 @@ The real file stays on the machine and is gitignored — a deploy never overwrit
 | `PERSIST_SECONDS` | `60` | how long better asks must persist before the bail-out fires |
 | `BETTER_ASKS_LIMIT` | `2` | how many better asks trigger the bail-out |
 | `BUY_TIMEOUT_SECONDS` | `180` | cancel an unfilled buy after this long |
+| `FREEZE_SECONDS` | `300` | wall-vs-monotonic clock skew that counts as a paused sandbox |
+| `STALL_SECONDS` | `900` | how long the loop may hang before it counts as a pause |
 | `FALLBACK_*` | see example | volume fallback mode |
 | `VOLUME_BASELINE` | `57000` | season volume to start from with no state file |
 
@@ -92,10 +94,17 @@ Push to `main` → GitHub Actions → SSH → `deploy/deploy.sh` → systemd res
 
 Secrets, `.session` and `volume_state.json` are never touched by a deploy.
 
-`keepalive.yml` runs every 10 minutes and opens an SSH session: the sandbox pauses
+`keepalive.yml` runs every 20 minutes and opens an SSH session: the sandbox pauses
 itself after 30 idle minutes, and SSH traffic counts as activity, so it stays up.
-The bot also detects a freeze (wall-clock jump) and re-syncs balances and orders
-instead of acting on stale state.
+It also restarts the bot when its heartbeat file (`/var/tmp/polyester.heartbeat`)
+goes stale, which catches a bot that is alive but wedged.
+
+The bot defends itself as well. A paused sandbox stops the guest clock, so the
+wall clock jumps while the monotonic clock does not; when the bot sees that
+skew (or a loop that hung for minutes), it cancels its **own** stale orders,
+re-reads the balances and re-adopts the real position. If the exchange is
+unreachable it keeps the position it has and retries on the next poll instead
+of trading on stale state.
 
 ## Daily claim
 
@@ -121,6 +130,17 @@ python tests/test_sell_loop.py
 ```
 
 Exits non-zero if the bot cancels more than once per bail-out.
+
+`tests/test_freeze_detect.py` pulls the real freeze-detection code out of
+`bot/monitor.py` and drives it: a normal poll does nothing, the real 1h47m
+pause triggers a re-sync, a stalled loop triggers it too, and an unreachable
+exchange keeps the position instead of forgetting it.
+
+```bash
+python tests/test_freeze_detect.py
+```
+
+Both run in CI on every push, before anything is deployed.
 
 ## Ops
 

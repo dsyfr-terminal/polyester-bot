@@ -75,7 +75,9 @@ PERSIST_SECONDS = float(os.environ.get("PERSIST_SECONDS", "60"))
 BETTER_ASKS_LIMIT = int(os.environ.get("BETTER_ASKS_LIMIT", "2"))
 BUY_TIMEOUT_SECONDS = float(os.environ.get("BUY_TIMEOUT_SECONDS", "180"))
 FEE_BUFFER = Decimal("1.0015")        # fee reserve headroom when sizing buys
-FREEZE_SECONDS = 60.0                 # wall-clock jump = the sandbox was frozen
+FREEZE_SECONDS = float(os.environ.get("FREEZE_SECONDS", "300"))  # clock skew = a pause
+STALL_SECONDS = float(os.environ.get("STALL_SECONDS", "900"))   # loop stuck = a pause
+HEARTBEAT = "/var/tmp/polyester.heartbeat"   # external keepalive reads this
 
 
 def frozen_seconds(wall, mono, last_wall, last_mono):
@@ -368,36 +370,54 @@ async def main():
                 for s, p in pairs.items()}
 
         async def resync(tag):
-            """Drop stale orders, re-read balances. Returns what we hold."""
-            for sweep in range(2):
-                try:
-                    await c.orders.cancel_all(request_id=f"{tag}-sweep-{sweep}-"
-                                              + uuid.uuid4().hex[:10])
-                    await asyncio.sleep(4)
-                    if not rest_open_orders().get("orders", []):
-                        break
-                    if sweep == 1:
-                        alert(f"WARNING: {len(rest_open_orders().get('orders', []))} "
-                              f"order(s) still open after sweep")
-                except Exception as e:
-                    print("sweep failed:", repr(e), flush=True)
+            """Cancel our stale orders, re-read balances.
 
-            held = []
+            Returns (held, ok). ok=False means the exchange was unreachable, so
+            the caller must keep its position instead of forgetting it.
+            """
+            held, ok = [], False
             for attempt in range(24):  # up to ~2 min: WiFi may still be coming back
                 try:
+                    held = []
                     for row in rest_balances():
                         sym = row.get("symbol", "")
                         if sym != QUOTE and Decimal(row.get("trading") or 0) > 0 \
                                 and (sym + "-" + QUOTE) in pairs:
                             held.append((sym + "-" + QUOTE, Decimal(row["trading"])))
+                    ok = True
                     break
                 except Exception as e:
                     print(f"balances read retry {attempt + 1}/24: {repr(e)}", flush=True)
                     await asyncio.sleep(5)
-            return held
+            if not ok:
+                alert("resync failed: balances unreadable, keeping the position",
+                      priority=True)
+                return [], False
+
+            # cancel only our own orders (gap1-*); manual orders stay untouched
+            left = []
+            for attempt in range(4):
+                try:
+                    ours = [o for o in rest_open_orders().get("orders", [])
+                            if str(o.get("clientOrderId", "")).startswith("gap1-")]
+                    for o in ours:
+                        await c.orders.cancel(key=ClientOrderId(o["clientOrderId"]),
+                                              symbol=o.get("symbol"))
+                    await asyncio.sleep(3)
+                    left = [o for o in rest_open_orders().get("orders", [])
+                            if str(o.get("clientOrderId", "")).startswith("gap1-")]
+                    if not left:
+                        break
+                except Exception as e:
+                    print(f"sweep retry {attempt + 1}/4:", repr(e), flush=True)
+                    await asyncio.sleep(3)
+            if left:
+                alert(f"WARNING: {len(left)} of our order(s) still open after sweep",
+                      priority=True)
+            return held, True
 
         # never carry orphaned orders across runs: sweep first, then adopt
-        adopt = await resync("gap1-boot")
+        adopt, boot_ok = await resync("gap1-boot")
 
         alert("Gap hunter online. Adopting: "
               + (", ".join(f"{s} {q}" for s, q in adopt) or "nothing")
@@ -406,6 +426,8 @@ async def main():
         state = "idle"
         adopt_q = list(adopt)
         pos = {}
+        carry = {}                 # symbol -> (buy_px, qty0) we already know
+        pending_resync = not boot_ok
         next_scan = 0.0
         next_fallback = 0.0
         next_block_alert = 0.0
@@ -446,6 +468,14 @@ async def main():
             except OSError:
                 pass
 
+        def beat(now):
+            """Heartbeat for the external keepalive: a stale file means we are wedged."""
+            try:
+                with open(HEARTBEAT, "w", encoding="utf-8") as f:
+                    f.write(str(int(now)))
+            except OSError:
+                pass
+
         def cycle_done(sym, sell_px):
             """Close a cycle from balance truth; alert with balances + volume."""
             nonlocal vol, next_10k, pos, state
@@ -479,24 +509,35 @@ async def main():
 
         while True:
             now = time.time()
-            mono = time.monotonic()
-            frozen = frozen_seconds(now, mono, last_wall, last_mono)
-            last_wall, last_mono = now, mono
-            if frozen > FREEZE_SECONDS:
-                # the sandbox was paused: our orders and balances are stale
-                alert(f"FREEZE DETECTED: sandbox paused for {frozen / 60:.1f} min "
-                      f"-> re-syncing orders and balances", priority=True)
-                adopt = await resync(f"gap1-freeze-{int(now)}")
-                adopt_q = list(adopt)
-                pos, state = {}, "idle"
-                next_scan = 0.0
             try:
-                if state == "idle" and adopt_q:
+                mono = time.monotonic()
+                gap = frozen_seconds(now, mono, last_wall, last_mono)
+                stall = now - last_wall
+                last_wall, last_mono = now, mono
+                beat(now)
+                if (gap > FREEZE_SECONDS or stall > STALL_SECONDS) and not pending_resync:
+                    pending_resync = True
+                    alert(f"FREEZE DETECTED: sandbox paused for "
+                          f"{max(gap, stall) / 60:.1f} min -> re-syncing orders "
+                          f"and balances", priority=True)
+                if pending_resync:
+                    # the exchange was unreachable: keep the position and retry
+                    held, ok = await resync(f"gap1-freeze-{int(now)}")
+                    if ok:
+                        pending_resync = False
+                        adopt_q = list(held)
+                        pos, state = {}, "idle"
+                        next_scan = 0.0
+                    now = time.time()
+                elif state == "idle" and adopt_q:
                     sym, qty = adopt_q.pop(0)
-                    pos = {"symbol": sym, "qty": qty, "qty0": qty,
-                           "buy_px": COST_BASIS.get(sym, Decimal(0)),
+                    basis, qty0 = carry.get(sym, (None, None))
+                    pos = {"symbol": sym, "qty": qty, "qty0": qty0 or qty,
+                           "buy_px": basis if basis is not None
+                           else COST_BASIS.get(sym, Decimal(0)),
                            "sell_cid": None, "better": {}}
                     state = "selling"
+                    carry[sym] = (pos["buy_px"], pos["qty0"])
                     alert(f"{sym}: adopting {qty} (basis {pos['buy_px'] or 'unknown'})")
 
                 elif state == "idle":
@@ -599,6 +640,7 @@ async def main():
                         if pos["qty"] > 0:
                             pos["qty0"] = pos["qty"]
                             pos["buy_px"] = avg if avg > 0 else pos["buy_px"]
+                            carry[sym] = (pos["buy_px"], pos["qty0"])
                             alert(f"{sym}: BUY filled {pos['qty']} @ {pos['buy_px']}", priority=True)
                             state = "selling"
                         else:
@@ -617,6 +659,7 @@ async def main():
                         if pos["qty"] > 0:
                             pos["qty0"] = pos["qty"]
                             pos["buy_px"] = avg if avg > 0 else pos["buy_px"]
+                            carry[sym] = (pos["buy_px"], pos["qty0"])
                             alert(f"{sym}: BUY filled {pos['qty']} @ {pos['buy_px']}", priority=True)
                             state = "selling"
                         else:

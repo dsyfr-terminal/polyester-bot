@@ -2,9 +2,11 @@ name: keepalive
 
 on:
   schedule:
-    # every 10 minutes: instabox counts terminal/SSH traffic as activity, so the
-    # sandbox never looks idle and never self-pauses (free plan: fixed 30m idle)
-    - cron: '*/10 * * * *'
+    # instabox counts terminal/SSH traffic as activity, so the sandbox never
+    # looks idle and never self-pauses (free plan: fixed 30m idle).
+    # 20 minutes apart: under the 30m idle timeout, and ~1.5k runner minutes
+    # a month (the free private-repo quota is 2k).
+    - cron: '7,27,47 * * * *'
   workflow_dispatch:
 
 concurrency:
@@ -23,7 +25,8 @@ jobs:
         run: |
           set -euo pipefail
           install -m 700 -d ~/.ssh
-          printf '%s\n' "$INSTABOX_SSH_KEY" > ~/.ssh/id_rsa
+          printf '%s' "$INSTABOX_SSH_KEY" | tr -d '\r' > ~/.ssh/id_rsa
+          echo >> ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           for attempt in 1 2 3; do
             ssh-keyscan -p "$PORT" "$HOST" >> ~/.ssh/known_hosts 2>/dev/null && break
@@ -40,8 +43,24 @@ jobs:
         run: |
           set -uo pipefail
           for attempt in 1 2 3 4 5; do
-            if ssh -o BatchMode=yes -o ConnectTimeout=20 -p "$PORT" "$USER@$HOST" \
-              'date -u > /var/tmp/keepalive.last; s=$(systemctl is-active polyester-bot || true); if [ "$s" != active ]; then sudo systemctl restart polyester-bot; sleep 10; s=$(systemctl is-active polyester-bot || true); fi; echo "bot=$s"; [ "$s" = active ]'; then
+            if ssh -o BatchMode=yes -o ConnectTimeout=20 -p "$PORT" "$USER@$HOST" '
+              date -u > /var/tmp/keepalive.last
+              # a wedged bot still shows as active: the heartbeat tells the truth
+              hb=$(cat /var/tmp/polyester.heartbeat 2>/dev/null || echo 0)
+              now=$(date +%s)
+              if [ "$hb" -gt 0 ] && [ $((now - hb)) -gt 300 ]; then
+                echo "heartbeat $((now - hb))s old -> restarting polyester-bot"
+                sudo systemctl restart polyester-bot
+                sleep 15
+              fi
+              s=$(systemctl is-active polyester-bot || true)
+              if [ "$s" != active ]; then
+                sudo systemctl restart polyester-bot
+                sleep 15
+                s=$(systemctl is-active polyester-bot || true)
+              fi
+              echo "bot=$s heartbeat_age=$((now - hb))s"
+              [ "$s" = active ]'; then
               echo "keepalive ok (attempt $attempt)"
               exit 0
             fi

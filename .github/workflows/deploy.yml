@@ -15,6 +15,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Run tests
+        run: |
+          python3 tests/test_sell_loop.py
+          python3 tests/test_freeze_detect.py
+
       - name: Configure SSH
         env:
           INSTABOX_SSH_KEY: ${{ secrets.INSTABOX_SSH_KEY }}
