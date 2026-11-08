@@ -22,6 +22,11 @@ import time
 import uuid
 from decimal import Decimal, ROUND_FLOOR
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "..", "bot", "monitor.py")
 src = open(SRC, encoding="utf-8").read()
@@ -168,12 +173,13 @@ ns = {
     "rest_open_orders": fake_rest_open_orders, "rest_balances": fake_rest_balances,
     "rest_asset_balance": fake_rest_asset_balance,
     "alert": fake_alert, "cycle_done": fake_cycle_done,
+    "wallet": lambda base=None: "USDT 100",
     "ClientOrderId": ClientOrderId,
     "PERSIST_SECONDS": 60.0, "BETTER_ASKS_LIMIT": 2,
     "TERMINAL": {"filled", "canceled", "rejected", "expired"},
 }
 
-for fn in ("pdec", "floor_step"):
+for fn in ("pdec", "floor_step", "money", "num", "notify"):
     exec(compile(seg([top_func(fn)]), "<%s>" % fn, "exec"), ns)
 
 exec(compile(seg([top_func("place_sell")]), "<place_sell>", "exec"), ns)
@@ -199,7 +205,7 @@ asyncio.run(run())
 
 asks = [e for e in ex.events if e[0] == "ASK"]
 cancels = [e for e in ex.events if e[0] == "CANCEL"]
-bails = [a for a in alerts if "bail-out" in a]
+bails = [a for a in alerts if "bail-out" in a.lower()]
 
 print("timeline:")
 for e in ex.events:

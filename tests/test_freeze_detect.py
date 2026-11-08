@@ -21,6 +21,11 @@ import sys
 import textwrap
 import types
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "..", "bot", "monitor.py")
 src = open(SRC, encoding="utf-8").read()
@@ -138,10 +143,12 @@ async def fake_resync(tag):
     return list(resync_result[0]), resync_result[1]
 
 
-gns = {"frozen_seconds": frozen_seconds, "time": ft, "alert":
-       lambda text, priority=False: alerts.append((text, priority)),
+gns = {"frozen_seconds": frozen_seconds, "time": ft,
+       "alert": lambda text: alerts.append(text),
        "resync": fake_resync, "beat": beats.append,
+       "wallet": lambda base=None: "USDT 100",
        "FREEZE_SECONDS": FREEZE_SECONDS, "STALL_SECONDS": STALL_SECONDS}
+exec(compile(seg([top_func("notify")]), "<notify>", "exec"), gns)
 exec(compile(guard_src, "<freeze_guard>", "exec"), gns)
 guard = gns["guard"]
 
@@ -167,8 +174,8 @@ check("baseline moves forward", (lw, lm) == (1002.0, 502.0), "%s/%s" % (lw, lm))
 
 pos, state, adopt_q, next_scan, pending, lw, lm = asyncio.run(run_guard(6470.0, 2.0))
 check("1h47m freeze triggers a resync", len(calls) == 1, "calls=%d" % len(calls))
-check("freeze alerts the user", any("FREEZE" in t for t, _ in alerts),
-      str([t for t, _ in alerts])[:80])
+check("freeze alerts the user", any("FREEZE" in t for t in alerts),
+      str(alerts)[:80])
 check("freeze resets the position", pos == {} and state == "idle")
 check("freeze re-adopts the real balances", adopt_q == [("TEST-USDT", 5)], str(adopt_q))
 check("freeze forces an immediate scan", next_scan == 0.0)

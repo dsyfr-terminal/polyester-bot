@@ -138,6 +138,33 @@ def alert(text):
     threading.Thread(target=send, daemon=True).start()
 
 
+def money(x):
+    return f"{Decimal(x):,.2f}"
+
+
+def num(x):
+    s = f"{Decimal(x):,.8f}".rstrip("0").rstrip(".")
+    return s or "0"
+
+
+def wallet(base=None):
+    """The balances that matter right now: 'USDT 3,094.10 | ARB 8,946.35'."""
+    try:
+        rows = {r.get("symbol"): r for r in rest_balances()}
+    except Exception as e:
+        print("wallet read failed:", repr(e), flush=True)
+        return "balances unavailable"
+    parts = [f"{QUOTE} {money(rows.get(QUOTE, {}).get('trading') or 0)}"]
+    if base and base in rows:
+        parts.append(f"{base} {num(rows[base].get('trading') or 0)}")
+    return " | ".join(parts)
+
+
+def notify(emoji, action, *lines):
+    """Telegram layout: emoji + action, then one line per fact."""
+    alert("\n".join([f"{emoji} {action}"] + [l for l in lines if l]))
+
+
 def rest_open_orders():
     """All open orders via signed REST (carries clientOrderId + symbol)."""
     ts = str(int(time.time() * 1000))
@@ -217,11 +244,15 @@ async def scan_books(c, pairs):
 
 async def place_sell(c, pos, meta):
     sym = pos["symbol"]
+    base = sym.split("-")[0]
     tick, step, min_not = meta[sym]["tick"], meta[sym]["step"], meta[sym]["min_notional"]
     book = await c.orderbook.get(symbol=sym, depth=10)
     if not book.asks:
         return False
     best_ask = pdec(book.asks[0].price)
+    best_bid = pdec(book.bids[0].price) if book.bids else Decimal(0)
+    spread = ((best_ask - best_bid) / ((best_ask + best_bid) / 2) * 100
+              if best_bid else Decimal(0))
     basis = pos.get("buy_px") or Decimal(0)
     if pos.get("bail"):
         target = best_ask - tick
@@ -234,7 +265,6 @@ async def place_sell(c, pos, meta):
     q = floor_step(pos["qty"], step)
     held = None
     try:
-        base = sym.split("-")[0]
         for row in rest_balances():
             if row.get("symbol") == base:
                 held = floor_step(Decimal(row.get("trading") or 0), step)
@@ -248,13 +278,14 @@ async def place_sell(c, pos, meta):
                 await c.orders.cancel_all(symbol=sym,
                                           request_id="gap1-ca-" + uuid.uuid4().hex[:10])
                 pos["skip_noted"] = False
-                alert(f"{sym}: {held} held but reserved by an orphan order -> "
-                      f"clearing it, will retry")
+                notify("⚠️", "ORPHAN CLEARED",
+                       f"{sym} | {num(held)} reserved by an orphan order | retrying")
             except Exception as e:
                 print("orphan clear failed:", repr(e), flush=True)
         elif not pos.get("skip_noted"):
             pos["skip_noted"] = True
-            alert(f"{sym}: sell skipped, below pair minimums (qty {q})")
+            notify("⚠️", "SELL SKIPPED",
+                   f"{sym} | below pair minimums | qty {num(q)}")
         return False
     po = not pos.get("no_postonly")
     for price, post in ((target, po), (best_ask, False)):
@@ -264,19 +295,25 @@ async def place_sell(c, pos, meta):
         if cid:
             pos["sell_cid"], pos["ask_px"] = cid, price
             pos["better"], pos["ask_at"] = {}, time.time()
-            alert(f"{sym}: ASK {q} @ {price} (bought @ {pos.get('buy_px', '?')})")
+            pnl_txt = (f"expected {(price - basis) * q * Decimal('0.998'):+.2f} USDT"
+                       if basis > 0 else "expected P&L unknown (no basis)")
+            notify("🔵", "ASK",
+                   f"{sym} | gap {spread:.3f}% | {num(q)} @ {num(price)} | "
+                   f"bought @ {num(basis) if basis else '?'}",
+                   f"{pnl_txt} | {wallet(base)}")
             return True
     if err and "insufficient" in err.lower():
         try:
             await c.orders.cancel_all(symbol=sym,
                                       request_id="gap1-ca-" + uuid.uuid4().hex[:10])
             pos["skip_noted"] = False
-            alert(f"{sym}: insufficient funds -> cleared orphaned orders, will retry")
+            notify("⚠️", "INSUFFICIENT FUNDS",
+                   f"{sym} | orphaned orders cleared | retrying")
         except Exception as e:
             print("orphan clear failed:", repr(e), flush=True)
     elif pos.get("last_err") != err:
         pos["last_err"] = err
-        alert(f"{sym}: ask placement rejected: {err}")
+        notify("⚠️", "ASK REJECTED", f"{sym} | {err}")
     return False
 
 
@@ -366,7 +403,8 @@ async def main():
                     print(f"balances read retry {attempt + 1}/24: {repr(e)}", flush=True)
                     await asyncio.sleep(5)
             if not ok:
-                alert("resync failed: balances unreadable, keeping the position")
+                notify("⚠️", "RESYNC FAILED",
+                       "balances unreadable | keeping the position")
                 return [], False
 
             left = []
@@ -386,14 +424,16 @@ async def main():
                     print(f"sweep retry {attempt + 1}/4:", repr(e), flush=True)
                     await asyncio.sleep(3)
             if left:
-                alert(f"WARNING: {len(left)} of our order(s) still open after sweep")
+                notify("⚠️", "ORDERS STILL OPEN",
+                       f"{len(left)} of our orders survived the sweep")
             return held, True
 
         adopt, boot_ok = await resync("gap1-boot")
 
-        alert("Gap hunter online. Adopting: "
-              + (", ".join(f"{s} {q}" for s, q in adopt) or "nothing")
-              + f" | gap>={GAP_MIN_PCT}% depth>={DEPTH_MIN_USD}$")
+        notify("🤖", "GAP HUNTER ONLINE",
+               f"gap ≥ {GAP_MIN_PCT}% | depth ≥ {money(DEPTH_MIN_USD)} USDT | "
+               + (", ".join(f"{s} {num(q)}" for s, q in adopt) or "nothing to adopt"),
+               wallet())
 
         state = "idle"
         adopt_q = list(adopt)
@@ -410,8 +450,8 @@ async def main():
                 s = json.load(f)
             vol = Decimal(s["total"])
             next_10k = int(s["next_milestone"])
-            alert(f"volume tracker resumed: {vol:,.0f} USDT; "
-                  f"next milestone {next_10k:,}")
+            notify("📊", "VOLUME TRACKER RESUMED",
+                   f"{money(vol)} USDT | next milestone {next_10k:,}")
         except (OSError, ValueError, KeyError):
             pass
         if vol is None:
@@ -425,11 +465,12 @@ async def main():
             vol = season_volume()
         if vol is None:
             vol = Decimal(50000)
-            alert("volume baseline unavailable -> starting from 50,000")
+            notify("⚠️", "VOLUME BASELINE",
+                   "scorecard unavailable | starting from 50,000")
         if next_10k is None:
             next_10k = (int(vol // 10000) + 1) * 10000
-            alert(f"volume tracker online: season baseline {vol:,.0f} USDT; "
-                  f"next milestone {next_10k:,}")
+            notify("📊", "VOLUME TRACKER ONLINE",
+                   f"season baseline {money(vol)} USDT | next milestone {next_10k:,}")
 
         def save_vol():
             try:
@@ -460,19 +501,20 @@ async def main():
             buy_usd = basis * sold
             fees = (sell_usd + buy_usd) * Decimal("0.001")
             net = sell_usd - buy_usd - fees
-            usdt_held, _ = rest_asset_balance(QUOTE)
             if sell_px > 0:
-                net = sell_usd - buy_usd - fees
-                net_txt = f"net {'+' if net >= 0 else ''}{net:.2f} USDT (fees ~{fees:.2f})"
+                net_txt = f"net {net:+.2f} USDT"
             else:
                 net_txt = "P&L unknown (fill price not observed)"
-            alert(f"{sym}: CYCLE DONE. sold ~{sold} @ ~{sell_px or '?'} | {net_txt}\n"
-                  f"balances: USDT {usdt_held:,.2f} | {base_sym} {base_held}")
+            notify("✅", "CYCLE DONE",
+                   f"{sym} | sold {num(sold)} @ "
+                   f"{num(sell_px) if sell_px else '?'} | fee {money(fees)} USDT",
+                   f"{net_txt} | {wallet(base_sym)}")
             buy_side = basis if basis > 0 else sell_px
             vol += sold * (buy_side + sell_px)
             while vol >= next_10k:
-                alert(f"MILESTONE: {next_10k:,} USDT season volume reached "
-                      f"(tracker total {vol:,.0f})")
+                notify("🏆", "MILESTONE",
+                       f"{next_10k:,} USDT season volume | tracker {money(vol)} USDT",
+                       f"{money(vol - next_10k)} USDT over the line | {wallet()}")
                 next_10k += 10000
             save_vol()
             pos, state = {}, "idle"
@@ -487,9 +529,10 @@ async def main():
                 beat(now)
                 if (gap > FREEZE_SECONDS or stall > STALL_SECONDS) and not pending_resync:
                     pending_resync = True
-                    alert(f"FREEZE DETECTED: sandbox paused for "
-                          f"{max(gap, stall) / 60:.1f} min -> re-syncing orders "
-                          f"and balances")
+                    notify("❄️", "FREEZE DETECTED",
+                           f"sandbox paused {max(gap, stall) / 60:.1f} min "
+                           f"| re-syncing orders and balances",
+                           wallet())
                 if pending_resync:
                     held, ok = await resync(f"gap1-freeze-{int(now)}")
                     if ok:
@@ -507,7 +550,10 @@ async def main():
                            "sell_cid": None, "better": {}}
                     state = "selling"
                     carry[sym] = (pos["buy_px"], pos["qty0"])
-                    alert(f"{sym}: adopting {qty} (basis {pos['buy_px'] or 'unknown'})")
+                    notify("♻️", "ADOPT",
+                           f"{sym} {num(qty)} | basis "
+                           f"{num(pos['buy_px']) if pos['buy_px'] else 'unknown'}",
+                           wallet(sym.split("-")[0]))
 
                 elif state == "idle":
                     if now >= next_scan:
@@ -551,9 +597,10 @@ async def main():
                             if (ours or held) and not hot:
                                 if now >= next_block_alert:
                                     next_block_alert = now + 600
-                                    alert(f"one-position rule: {len(ours)} open order(s), "
-                                          f"{len(held)} held position(s) -> not starting "
-                                          f"{sym} ({tag}, 24h {chg:.1f}%)")
+                                    notify("⚠️", "ONE-POSITION",
+                                           f"{sym} | {len(ours)} open order(s) | "
+                                           f"{len(held)} held position(s) | 24h {chg:.1f}%",
+                                           f"not starting a new trade | {wallet()}")
                                 picked = None
                             elif hot and (ours or held):
                                 try:
@@ -563,9 +610,10 @@ async def main():
                                     pass
                                 adopt_q.extend((r["symbol"] + "-" + QUOTE,
                                                 Decimal(r["trading"])) for r in held)
-                                alert(f"HOT override: {sym} 24h {chg:.1f}% > 20% -> "
-                                      f"starting despite {len(ours)} order(s) / "
-                                      f"{len(held)} held (queued for adoption)")
+                                notify("🔥", "HOT OVERRIDE",
+                                       f"{sym} | 24h {chg:.1f}% > 20% | "
+                                       f"{len(ours)} order(s) | {len(held)} held",
+                                       "starting anyway | queued for adoption")
                                 picked = None
                         if picked:
                             gap, sym, bid, ask, bid_usd, ask_usd = picked
@@ -584,18 +632,25 @@ async def main():
                                            "join_ask": tag == "VOLUME"}
                                     state = "buying"
                                     if tag == "GAP":
-                                        alert(f"GAP {sym}: {gap:.2f}% "
-                                              f"(net +{gap - RT_FEE_PCT:.2f}%) | "
-                                              f"bid ${bid_usd:.0f} ask ${ask_usd:.0f} "
-                                              f"-> BUY {q} @ {price}")
+                                        notify("🟢", "BUY",
+                                               f"{sym} | gap {gap:.2f}% "
+                                               f"(net +{gap - RT_FEE_PCT:.2f}%) | "
+                                               f"{num(q)} @ {num(price)} | "
+                                               f"depth {money(bid_usd)}/{money(ask_usd)}",
+                                               f"expected +{q * price * (gap - RT_FEE_PCT) / 100:.2f}"
+                                               f" USDT | {wallet(sym.split('-')[0])}")
                                     else:
                                         loss = q * price * (RT_FEE_PCT - gap) / 100
-                                        alert(f"VOLUME {sym}: gap {gap:.3f}% (<0.20% fee) -> "
-                                              f"expect ~{loss:.2f} USDT loss per "
-                                              f"~{q * price * 2:.0f} USDT volume cycle | "
-                                              f"BUY {q} @ {price}")
+                                        notify("🟡", "VOLUME BUY",
+                                               f"{sym} | gap {gap:.3f}% "
+                                               f"(fee {RT_FEE_PCT}%) | "
+                                               f"{num(q)} @ {num(price)} | "
+                                               f"volume {money(q * price * 2)} USDT",
+                                               f"expected -{loss:.2f} USDT "
+                                               f"| {wallet(sym.split('-')[0])}")
                             else:
-                                alert(f"{tag} {sym} spotted but below pair minimums")
+                                notify("⚠️", "SKIPPED",
+                                       f"{sym} | {tag} | below pair minimums")
 
                 elif state == "buying":
                     sym = pos["symbol"]
@@ -608,10 +663,14 @@ async def main():
                             pos["qty0"] = pos["qty"]
                             pos["buy_px"] = avg if avg > 0 else pos["buy_px"]
                             carry[sym] = (pos["buy_px"], pos["qty0"])
-                            alert(f"{sym}: BUY filled {pos['qty']} @ {pos['buy_px']}")
+                            notify("✅", "BUY FILLED",
+                                   f"{sym} | {num(pos['qty'])} @ {num(pos['buy_px'])}",
+                                   wallet(sym.split("-")[0]))
                             state = "selling"
                         else:
-                            alert(f"{sym}: buy ended unfilled ({st})")
+                            notify("⚠️", "BUY UNFILLED",
+                                   f"{sym} | order ended {st}",
+                                   wallet(sym.split("-")[0]))
                             state = "idle"
                     elif now - pos["buy_at"] > BUY_TIMEOUT_SECONDS:
                         try:
@@ -621,13 +680,18 @@ async def main():
                             pass
                         st, cum, avg = await order_state(c, sym, pos["buy_cid"],
                                                          m["scale"])
-                        alert(f"{sym}: buy timeout after {BUY_TIMEOUT_SECONDS:.0f}s")
+                        notify("⚠️", "BUY TIMEOUT",
+                               f"{sym} | no fill after {BUY_TIMEOUT_SECONDS:.0f}s "
+                               f"| cancelled",
+                               wallet(sym.split("-")[0]))
                         pos["qty"] = floor_step(await base_balance(c, sym, m), m["step"])
                         if pos["qty"] > 0:
                             pos["qty0"] = pos["qty"]
                             pos["buy_px"] = avg if avg > 0 else pos["buy_px"]
                             carry[sym] = (pos["buy_px"], pos["qty0"])
-                            alert(f"{sym}: BUY filled {pos['qty']} @ {pos['buy_px']}")
+                            notify("✅", "BUY FILLED",
+                                   f"{sym} | {num(pos['qty'])} @ {num(pos['buy_px'])}",
+                                   wallet(sym.split("-")[0]))
                             state = "selling"
                         else:
                             state = "idle"
@@ -681,8 +745,10 @@ async def main():
                                                           symbol=sym)
                                 except Exception:
                                     pass
-                                alert(f"{sym}: {aged} better asks held >{PERSIST_SECONDS:.0f}s "
-                                      f"-> bail-out: re-asking under them")
+                                notify("⚠️", "ASK BAIL-OUT",
+                                       f"{sym} | {aged} better asks held "
+                                       f"{PERSIST_SECONDS:.0f}s | re-asking under them",
+                                       wallet(sym.split("-")[0]))
                                 pos["canceling"] = True
                                 pos["bail"] = True
             except Exception as e:
