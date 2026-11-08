@@ -2,12 +2,14 @@ name: keepalive
 
 on:
   schedule:
-    # instabox counts terminal/SSH traffic as activity, so the sandbox never
-    # looks idle and never self-pauses (free plan: fixed 30m idle).
-    # 20 minutes apart: under the 30m idle timeout, and ~1.5k runner minutes
-    # a month (the free private-repo quota is 2k).
-    - cron: '7,27,47 * * * *'
+    # every 10 minutes: instabox counts terminal/SSH traffic as activity, so the
+    # sandbox never looks idle and never self-pauses (free plan: fixed 30m idle)
+    - cron: '*/10 * * * *'
   workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
 
 concurrency:
   group: polyester-keepalive
@@ -69,3 +71,22 @@ jobs:
           done
           echo "keepalive FAILED: sandbox unreachable" >&2
           exit 1
+
+      - name: Queue the next run
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # GitHub's cron scheduler can sit idle for hours on a new workflow.
+          # This run queues the next one itself, so the keepalive keeps its
+          # 10 minute rhythm with or without the scheduler.
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            -d '{"ref":"main"}' \
+            "https://api.github.com/repos/$REPO/actions/workflows/keepalive.yml/dispatches")
+          echo "next run queued (HTTP $code)"
+          [ "$code" = "204" ]
