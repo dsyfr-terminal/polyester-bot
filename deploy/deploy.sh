@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Sync bot code to the instabox sandbox and restart the service.
-# Runs ON the target machine; the repo is expected at $REPO_ROOT.
 set -euo pipefail
 
 APP_DIR=${APP_DIR:-/data/workspace/polyester}
@@ -8,8 +6,6 @@ REPO_ROOT=${REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}
 
 mkdir -p "$APP_DIR"
 
-# Code only. .env, .session and volume_state.json live on the machine and are
-# never touched by a deploy.
 find "$APP_DIR" -maxdepth 1 -name '*.py' -delete
 cp "$REPO_ROOT"/bot/*.py "$APP_DIR"/
 chmod +x "$APP_DIR"/*.py

@@ -2,7 +2,6 @@
 import subprocess
 import sys
 
-# PowerShell via a temp file avoids all nested-quoting issues
 ps = r"""
 Get-CimInstance Win32_Process |
   Where-Object { $_.CommandLine -match 'monitor|hunter_forever' -and $_.ProcessId -ne $PID } |

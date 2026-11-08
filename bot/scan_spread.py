@@ -23,7 +23,7 @@ def load_env():
 
 load_env()
 
-RT_FEE_PCT = Decimal("0.20")  # maker 0.1% buy + 0.1% sell
+RT_FEE_PCT = Decimal("0.20")
 
 
 def dec(v):

@@ -46,7 +46,7 @@ def load_env():
 load_env()
 
 import sys  # noqa: E402
-try:  # Windows consoles default to cp1252; arrows/emoji in alerts would crash
+try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
     pass
@@ -59,25 +59,23 @@ _SK = nacl.signing.SigningKey(bytes.fromhex(os.environ["POLYESTER_ED25519_SEED"]
 ACCOUNT = os.environ.get("POLYESTER_ACCOUNT_ID", "MUYiAxF1Kkv")
 
 QUOTE = "USDT"
-RT_FEE_PCT = Decimal("0.20")          # maker 0.1% x2
+RT_FEE_PCT = Decimal("0.20")
 GAP_MIN_PCT = Decimal(os.environ.get("GAP_MIN_PCT", "0.21"))
 DEPTH_MIN_USD = Decimal(os.environ.get("DEPTH_MIN_USD", "50"))
-# Volume-fallback mode: when no pair clears the fee bar, cycle the deepest
-# tightest pair anyway, accepting a small per-cycle loss to keep volume up.
-FALLBACK_SYMBOL = os.environ.get("FALLBACK_SYMBOL", "").strip()  # empty = auto-pick
+FALLBACK_SYMBOL = os.environ.get("FALLBACK_SYMBOL", "").strip()
 FALLBACK_MIN_GAP_PCT = Decimal(os.environ.get("FALLBACK_MIN_GAP_PCT", "0.05"))
 FALLBACK_DEPTH_MIN_USD = Decimal(os.environ.get("FALLBACK_DEPTH_MIN_USD", "1000"))
 FALLBACK_COOLDOWN = float(os.environ.get("FALLBACK_COOLDOWN", "60"))
-FALLBACK_PENNY = os.environ.get("FALLBACK_PENNY", "0") == "1"  # 1 = fill faster, lose more
+FALLBACK_PENNY = os.environ.get("FALLBACK_PENNY", "0") == "1"
 SCAN_SECONDS = float(os.environ.get("SCAN_SECONDS", "10"))
 POLL_SECONDS = float(os.environ.get("POLL_SECONDS", "2"))
 PERSIST_SECONDS = float(os.environ.get("PERSIST_SECONDS", "60"))
 BETTER_ASKS_LIMIT = int(os.environ.get("BETTER_ASKS_LIMIT", "2"))
 BUY_TIMEOUT_SECONDS = float(os.environ.get("BUY_TIMEOUT_SECONDS", "180"))
-FEE_BUFFER = Decimal("1.0015")        # fee reserve headroom when sizing buys
-FREEZE_SECONDS = float(os.environ.get("FREEZE_SECONDS", "300"))  # clock skew = a pause
-STALL_SECONDS = float(os.environ.get("STALL_SECONDS", "900"))   # loop stuck = a pause
-HEARTBEAT = "/var/tmp/polyester.heartbeat"   # external keepalive reads this
+FEE_BUFFER = Decimal("1.0015")
+FREEZE_SECONDS = float(os.environ.get("FREEZE_SECONDS", "300"))
+STALL_SECONDS = float(os.environ.get("STALL_SECONDS", "900"))
+HEARTBEAT = "/var/tmp/polyester.heartbeat"
 
 
 def frozen_seconds(wall, mono, last_wall, last_mono):
@@ -90,7 +88,6 @@ def frozen_seconds(wall, mono, last_wall, last_mono):
 
 TERMINAL = {"filled", "canceled", "rejected", "expired"}
 
-# Known cost basis for adopted holdings (from the filled manual buy).
 COST_BASIS = {"BTC-USDT": Decimal("76227.38"), "ARB-USDT": Decimal("0.1684")}
 
 
@@ -113,27 +110,11 @@ def floor_step(x, step):
     return (x / step).to_integral_value(rounding=ROUND_FLOOR) * step
 
 
-_last_ntfy = [0.0]
-
-
-def alert(text, priority=False):
+def alert(text):
     print(text, flush=True)
-    # never block the trading loop on alert I/O
     import threading
 
     def send():
-        topic = os.environ.get("NTFY_TOPIC", "").strip()
-        # ntfy's free tier 429s on bursts: routine alerts max ~1/min, priority always
-        if topic and (priority or time.time() - _last_ntfy[0] >= 60):
-            _last_ntfy[0] = time.time()
-            try:
-                req = urllib.request.Request(
-                    "https://ntfy.sh/" + topic, data=text.encode(),
-                    headers={"Title": "Polyester Hunter", "Tags": "robot"})
-                urllib.request.urlopen(req, timeout=10)
-            except Exception as e:
-                print("ntfy failed:", repr(e), flush=True)
-        # telegram always gets every alert; only ntfy is rate-limited
         tok = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
         chat = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
         if tok and chat:
@@ -243,16 +224,16 @@ async def place_sell(c, pos, meta):
     best_ask = pdec(book.asks[0].price)
     basis = pos.get("buy_px") or Decimal(0)
     if pos.get("bail"):
-        target = best_ask - tick                      # emergency exit: undercut
+        target = best_ask - tick
     elif pos.get("join_ask"):
-        target = max(best_ask, basis) if basis > 0 else best_ask  # min-loss: join touch
+        target = max(best_ask, basis) if basis > 0 else best_ask
     elif basis > 0:
-        target = max(best_ask - tick, basis)          # never ask below known cost
+        target = max(best_ask - tick, basis)
     else:
         target = best_ask - tick
     q = floor_step(pos["qty"], step)
     held = None
-    try:  # never advertise more than we actually hold
+    try:
         base = sym.split("-")[0]
         for row in rest_balances():
             if row.get("symbol") == base:
@@ -262,7 +243,6 @@ async def place_sell(c, pos, meta):
     except Exception:
         held = None
     if q <= 0 or q * best_ask < min_not:
-        # held-but-unavailable means one of our own orders is squatting on it
         if held and held * best_ask >= min_not:
             try:
                 await c.orders.cancel_all(symbol=sym,
@@ -273,10 +253,9 @@ async def place_sell(c, pos, meta):
             except Exception as e:
                 print("orphan clear failed:", repr(e), flush=True)
         elif not pos.get("skip_noted"):
-            pos["skip_noted"] = True  # alert once per position, never flood
+            pos["skip_noted"] = True
             alert(f"{sym}: sell skipped, below pair minimums (qty {q})")
         return False
-    # prefer undercutting the touch (maker, first in queue); fall back to joining
     po = not pos.get("no_postonly")
     for price, post in ((target, po), (best_ask, False)):
         if price <= 0:
@@ -288,7 +267,6 @@ async def place_sell(c, pos, meta):
             alert(f"{sym}: ASK {q} @ {price} (bought @ {pos.get('buy_px', '?')})")
             return True
     if err and "insufficient" in err.lower():
-        # an orphaned live order is holding our funds — clear the symbol, retry next poll
         try:
             await c.orders.cancel_all(symbol=sym,
                                       request_id="gap1-ca-" + uuid.uuid4().hex[:10])
@@ -296,7 +274,7 @@ async def place_sell(c, pos, meta):
             alert(f"{sym}: insufficient funds -> cleared orphaned orders, will retry")
         except Exception as e:
             print("orphan clear failed:", repr(e), flush=True)
-    elif pos.get("last_err") != err:  # one alert per distinct error, never a flood
+    elif pos.get("last_err") != err:
         pos["last_err"] = err
         alert(f"{sym}: ask placement rejected: {err}")
     return False
@@ -334,9 +312,7 @@ async def base_balance(c, sym, m):
 
 
 async def main():
-    # baseline for freeze detection (wall clock vs guest monotonic clock)
     last_wall, last_mono = time.time(), time.monotonic()
-    # tolerate WiFi blips at boot: retry client + catalog hydration
     c = None
     for attempt in range(12):
         try:
@@ -376,7 +352,7 @@ async def main():
             the caller must keep its position instead of forgetting it.
             """
             held, ok = [], False
-            for attempt in range(24):  # up to ~2 min: WiFi may still be coming back
+            for attempt in range(24):
                 try:
                     held = []
                     for row in rest_balances():
@@ -390,11 +366,9 @@ async def main():
                     print(f"balances read retry {attempt + 1}/24: {repr(e)}", flush=True)
                     await asyncio.sleep(5)
             if not ok:
-                alert("resync failed: balances unreadable, keeping the position",
-                      priority=True)
+                alert("resync failed: balances unreadable, keeping the position")
                 return [], False
 
-            # cancel only our own orders (gap1-*); manual orders stay untouched
             left = []
             for attempt in range(4):
                 try:
@@ -412,11 +386,9 @@ async def main():
                     print(f"sweep retry {attempt + 1}/4:", repr(e), flush=True)
                     await asyncio.sleep(3)
             if left:
-                alert(f"WARNING: {len(left)} of our order(s) still open after sweep",
-                      priority=True)
+                alert(f"WARNING: {len(left)} of our order(s) still open after sweep")
             return held, True
 
-        # never carry orphaned orders across runs: sweep first, then adopt
         adopt, boot_ok = await resync("gap1-boot")
 
         alert("Gap hunter online. Adopting: "
@@ -426,13 +398,12 @@ async def main():
         state = "idle"
         adopt_q = list(adopt)
         pos = {}
-        carry = {}                 # symbol -> (buy_px, qty0) we already know
+        carry = {}
         pending_resync = not boot_ok
         next_scan = 0.0
         next_fallback = 0.0
         next_block_alert = 0.0
 
-        # volume: disk state -> .env baseline -> API scorecard -> 50k
         vol, next_10k = None, None
         try:
             with open(os.path.join(HERE, "volume_state.json"), encoding="utf-8") as f:
@@ -497,12 +468,11 @@ async def main():
                 net_txt = "P&L unknown (fill price not observed)"
             alert(f"{sym}: CYCLE DONE. sold ~{sold} @ ~{sell_px or '?'} | {net_txt}\n"
                   f"balances: USDT {usdt_held:,.2f} | {base_sym} {base_held}")
-            # the site counts BOTH sides of every round (each fill's notional)
-            buy_side = basis if basis > 0 else sell_px  # adopted: assume buy ~ sell
+            buy_side = basis if basis > 0 else sell_px
             vol += sold * (buy_side + sell_px)
             while vol >= next_10k:
                 alert(f"MILESTONE: {next_10k:,} USDT season volume reached "
-                      f"(tracker total {vol:,.0f})", priority=True)
+                      f"(tracker total {vol:,.0f})")
                 next_10k += 10000
             save_vol()
             pos, state = {}, "idle"
@@ -519,9 +489,8 @@ async def main():
                     pending_resync = True
                     alert(f"FREEZE DETECTED: sandbox paused for "
                           f"{max(gap, stall) / 60:.1f} min -> re-syncing orders "
-                          f"and balances", priority=True)
+                          f"and balances")
                 if pending_resync:
-                    # the exchange was unreachable: keep the position and retry
                     held, ok = await resync(f"gap1-freeze-{int(now)}")
                     if ok:
                         pending_resync = False
@@ -561,8 +530,6 @@ async def main():
                                 next_fallback = now + FALLBACK_COOLDOWN
                         if picked:
                             gap, sym, bid, ask, bid_usd, ask_usd = picked
-                            # one-position rule: never stack trades unless the candidate
-                            # is a >20% 24h mover (hot override)
                             ours = [o for o in rest_open_orders().get("orders", [])
                                     if str(o.get("clientOrderId", "")).startswith("gap1-")]
                             held = [r for r in rest_balances()
@@ -599,7 +566,7 @@ async def main():
                                 alert(f"HOT override: {sym} 24h {chg:.1f}% > 20% -> "
                                       f"starting despite {len(ours)} order(s) / "
                                       f"{len(held)} held (queued for adoption)")
-                                picked = None  # this scan starts clean next pass
+                                picked = None
                         if picked:
                             gap, sym, bid, ask, bid_usd, ask_usd = picked
                             m = meta[sym]
@@ -620,13 +587,13 @@ async def main():
                                         alert(f"GAP {sym}: {gap:.2f}% "
                                               f"(net +{gap - RT_FEE_PCT:.2f}%) | "
                                               f"bid ${bid_usd:.0f} ask ${ask_usd:.0f} "
-                                              f"-> BUY {q} @ {price}", priority=True)
+                                              f"-> BUY {q} @ {price}")
                                     else:
                                         loss = q * price * (RT_FEE_PCT - gap) / 100
                                         alert(f"VOLUME {sym}: gap {gap:.3f}% (<0.20% fee) -> "
                                               f"expect ~{loss:.2f} USDT loss per "
                                               f"~{q * price * 2:.0f} USDT volume cycle | "
-                                              f"BUY {q} @ {price}", priority=True)
+                                              f"BUY {q} @ {price}")
                             else:
                                 alert(f"{tag} {sym} spotted but below pair minimums")
 
@@ -641,7 +608,7 @@ async def main():
                             pos["qty0"] = pos["qty"]
                             pos["buy_px"] = avg if avg > 0 else pos["buy_px"]
                             carry[sym] = (pos["buy_px"], pos["qty0"])
-                            alert(f"{sym}: BUY filled {pos['qty']} @ {pos['buy_px']}", priority=True)
+                            alert(f"{sym}: BUY filled {pos['qty']} @ {pos['buy_px']}")
                             state = "selling"
                         else:
                             alert(f"{sym}: buy ended unfilled ({st})")
@@ -660,7 +627,7 @@ async def main():
                             pos["qty0"] = pos["qty"]
                             pos["buy_px"] = avg if avg > 0 else pos["buy_px"]
                             carry[sym] = (pos["buy_px"], pos["qty0"])
-                            alert(f"{sym}: BUY filled {pos['qty']} @ {pos['buy_px']}", priority=True)
+                            alert(f"{sym}: BUY filled {pos['qty']} @ {pos['buy_px']}")
                             state = "selling"
                         else:
                             state = "idle"
@@ -672,7 +639,6 @@ async def main():
                     price_est = pos.get("last_avg") or pos.get("ask_px") or Decimal(0)
                     if held < m["min_qty"] or (price_est > 0 and
                                                held * price_est < m["min_notional"]):
-                        # balances are the truth: nothing sellable held -> cycle over
                         cycle_done(sym, price_est)
                     elif pos["sell_cid"] is None:
                         pos["qty"] = min(pos.get("qty") or held, held)
@@ -683,11 +649,10 @@ async def main():
                             pos["last_avg"] = avg
                         if st in TERMINAL:
                             if st == "rejected" and cum <= 0:
-                                pos["no_postonly"] = True  # post-only kept getting crossed
+                                pos["no_postonly"] = True
                             pos["sell_cid"] = None
-                            pos["canceling"] = False  # order is gone: nothing left to cancel
+                            pos["canceling"] = False
                         elif pos.get("canceling"):
-                            # re-send the cancel until the order is really gone
                             if any(o.get("clientOrderId") == pos["sell_cid"]
                                    for o in rest_open_orders().get("orders", [])):
                                 try:
@@ -717,7 +682,7 @@ async def main():
                                 except Exception:
                                     pass
                                 alert(f"{sym}: {aged} better asks held >{PERSIST_SECONDS:.0f}s "
-                                      f"-> bail-out: re-asking under them", priority=True)
+                                      f"-> bail-out: re-asking under them")
                                 pos["canceling"] = True
                                 pos["bail"] = True
             except Exception as e:

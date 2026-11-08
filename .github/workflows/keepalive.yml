@@ -2,8 +2,6 @@ name: keepalive
 
 on:
   schedule:
-    # every 10 minutes: instabox counts terminal/SSH traffic as activity, so the
-    # sandbox never looks idle and never self-pauses (free plan: fixed 30m idle)
     - cron: '*/10 * * * *'
   workflow_dispatch:
 
@@ -47,7 +45,6 @@ jobs:
           for attempt in 1 2 3 4 5; do
             if ssh -o BatchMode=yes -o ConnectTimeout=20 -p "$PORT" "$USER@$HOST" '
               date -u > /var/tmp/keepalive.last
-              # a wedged bot still shows as active: the heartbeat tells the truth
               hb=$(cat /var/tmp/polyester.heartbeat 2>/dev/null || echo 0)
               now=$(date +%s)
               if [ "$hb" -gt 0 ] && [ $((now - hb)) -gt 300 ]; then
@@ -79,9 +76,6 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          # GitHub's cron scheduler can sit idle for hours on a new workflow.
-          # This run queues the next one itself, so the keepalive keeps its
-          # 10 minute rhythm with or without the scheduler.
           sleep 570
           code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \

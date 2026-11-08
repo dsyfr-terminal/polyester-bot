@@ -28,7 +28,6 @@ import uuid
 
 API = "https://api.testnet.polyester.com"
 SITE = "https://testnet.polyester.com"
-# Cloudflare challenges bare scripts; send a normal browser UA.
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
 
@@ -78,12 +77,11 @@ class ApiError(Exception):
 def http(method, path, body=None, token=None, connect=False, api_key=False,
          retries=2):
     if not path.startswith("/"):
-        path = "/" + path  # callers omit the slash; API has no trailing one
+        path = "/" + path
     body_b = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(API + path, data=body_b, method=method)
     req.add_header("User-Agent", UA)
     req.add_header("Accept", "application/json")
-    # Cloudflare blocks API POSTs lacking browser origin headers.
     req.add_header("Origin", SITE)
     req.add_header("Referer", SITE + "/")
     req.add_header("Accept-Language", "en-US,en;q=0.9")
@@ -115,13 +113,11 @@ def http(method, path, body=None, token=None, connect=False, api_key=False,
                 parsed = {"raw": payload[:300]}
             code = parsed.get("code", "")
             last = ApiError(e.code, code, parsed)
-            # Retry transient server-side conditions only.
             if e.code in (429, 503) or code in ("RATE_LIMIT_EXCEEDED", "UNAVAILABLE"):
                 time.sleep(2 * (attempt + 1))
                 continue
             raise last
         except (urllib.error.URLError, OSError) as e:
-            # transient DNS/socket failures (gaierror) — retry, don't traceback
             last = ApiError(0, "NETWORK", {"error": str(e)})
             time.sleep(2 * (attempt + 1))
             continue
@@ -150,7 +146,6 @@ def get_token():
     if jwt:
         return jwt.strip()
     cache = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".session")
-    # reuse the 24h session instead of re-logging in (Cloudflare rate-limits logins)
     try:
         with open(cache, encoding="utf-8") as f:
             saved = json.load(f)
@@ -225,14 +220,12 @@ def do_claim(token, subaccount=None):
         res = http("POST", "/v1/trading/daily-claim/claim", body, token=token)
     except ApiError as e:
         if e.code in ("CLAIM_UNAVAILABLE", "CONFLICT", "RATE_LIMIT_EXCEEDED"):
-            # Already claimed or nothing to claim: report actual status, don't die.
             print(f"claim not submitted ({e.code}); current status:")
             print_status(get_status(token))
             return None
         die(e.code or str(e))
     print("claim submitted:")
     print(json.dumps(res, indent=2))
-    # Poll until settled; payout can lag.
     for _ in range(12):
         time.sleep(5)
         st = get_status(token)
@@ -394,8 +387,8 @@ def main():
     k.add_argument("--subaccount")
     sub.add_parser("daily")
     sub.add_parser("selftest")
-    sub.add_parser("me")        # API-key identity check
-    sub.add_parser("balances")  # API-key balance read
+    sub.add_parser("me")
+    sub.add_parser("balances")
     args = p.parse_args()
 
     if args.cmd == "selftest":

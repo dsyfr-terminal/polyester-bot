@@ -77,8 +77,7 @@ The real file stays on the machine and is gitignored — a deploy never overwrit
 | `FALLBACK_*` | see example | volume fallback mode |
 | `VOLUME_BASELINE` | `57000` | season volume to start from with no state file |
 
-Alerts go to **Telegram** (every alert), **ntfy** (routine alerts capped at one per
-minute — the free tier rate-limits bursts) and **Discord** if `DISCORD_WEBHOOK_URL`
+Alerts go to **Telegram** (every alert) and **Discord** if `DISCORD_WEBHOOK_URL`
 is set. Everything is also printed to the journal.
 
 ## Deploy

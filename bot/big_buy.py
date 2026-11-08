@@ -26,7 +26,7 @@ load_env()
 
 SYMBOL = "BTC-USDT"
 STEP = Decimal("0.00000001")
-FEE_BUFFER = Decimal("1.0015")  # maker 0.1% + reserve headroom
+FEE_BUFFER = Decimal("1.0015")
 
 CID = "man1-" + uuid.uuid4().hex[:16]
 

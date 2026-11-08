@@ -52,9 +52,9 @@ assert selling, "could not locate the state == 'selling' branch"
 TOTAL = Decimal("100")
 TICK = Decimal("0.1")
 STEP = Decimal("0.0001")
-ASKS = ["9.7", "9.8", "9.9", "10.0"]      # ascending -> best ask = 9.7
+ASKS = ["9.7", "9.8", "9.9", "10.0"]
 BASIS = Decimal("10.0")
-CANCEL_LAG = 6.0                          # exchange needs ~3 polls to release
+CANCEL_LAG = 6.0
 
 
 class Exchange:
@@ -81,7 +81,7 @@ class Exchange:
     def cancel(self, cid):
         o = self.orders.get(cid)
         if o is None or o["status"] != "open":
-            return                       # already cancelling -> no-op, like the real API
+            return
         o["status"] = "canceling"
         o["release_at"] = self.now + CANCEL_LAG
         self.events.append(("CANCEL", cid))
@@ -189,7 +189,7 @@ client = FakeClient()
 
 async def run():
     now = 0.0
-    for _ in range(60):                 # 60 polls x 2s = 120s of trading time
+    for _ in range(60):
         now += 2.0
         ex.now = now
         await ns["selling_step"](client, pos, meta, now)
