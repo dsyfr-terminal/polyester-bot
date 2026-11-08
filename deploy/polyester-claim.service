@@ -1,0 +1,10 @@
+[Unit]
+Description=Polyester daily paper asset claim
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=user
+WorkingDirectory=/data/workspace/polyester
+ExecStart=/data/workspace/polyester/.venv/bin/python polyester_farm.py claim

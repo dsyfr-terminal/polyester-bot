@@ -112,6 +112,18 @@ sudo systemctl start polyester-bot
 journalctl -u polyester-bot -f
 ```
 
+## Daily claim
+
+`deploy/polyester-claim.timer` claims the daily paper asset at **00:10 UTC**.
+`Persistent=true`, so a run missed while the machine was stopped happens on
+the next boot. Whatever the claim pays out arrives as extra balances, which
+the bot adopts and sells back into USDT before it looks for the next gap.
+
+```bash
+systemctl list-timers polyester-claim.timer
+journalctl -u polyester-claim.service
+```
+
 ## Deploying
 
 `main` is deployed to the instabox sandbox by GitHub Actions: the workflow

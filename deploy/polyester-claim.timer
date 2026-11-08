@@ -1,0 +1,10 @@
+[Unit]
+Description=Polyester daily paper asset claim (00:10 UTC)
+
+[Timer]
+OnCalendar=*-*-* 00:10:00
+Persistent=true
+Unit=polyester-claim.service
+
+[Install]
+WantedBy=timers.target
