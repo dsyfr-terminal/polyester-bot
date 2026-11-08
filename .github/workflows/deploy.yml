@@ -25,7 +25,14 @@ jobs:
           install -m 700 -d ~/.ssh
           printf '%s\n' "$INSTABOX_SSH_KEY" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -p "$PORT" "$HOST" >> ~/.ssh/known_hosts
+          for attempt in 1 2 3 4 5; do
+            if ssh-keyscan -p "$PORT" "$HOST" >> ~/.ssh/known_hosts 2>/dev/null; then
+              break
+            fi
+            echo "ssh-keyscan attempt $attempt failed, retrying"
+            sleep 10
+          done
+          grep -qE "^[^#]*${HOST}" ~/.ssh/known_hosts
 
       - name: Ship code to instabox
         env:
