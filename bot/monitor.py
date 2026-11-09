@@ -78,6 +78,7 @@ BUY_TIMEOUT_SECONDS = float(os.environ.get("BUY_TIMEOUT_SECONDS", "180"))
 FEE_BUFFER = Decimal("1.0015")
 FREEZE_SECONDS = float(os.environ.get("FREEZE_SECONDS", "300"))
 STALL_SECONDS = float(os.environ.get("STALL_SECONDS", "900"))
+BALANCE_GRACE = float(os.environ.get("BALANCE_GRACE_SECONDS", "120"))
 HEARTBEAT = "/var/tmp/polyester.heartbeat"
 
 
@@ -286,6 +287,7 @@ async def place_sell(c, pos, meta):
             except Exception as e:
                 print("orphan clear failed:", repr(e), flush=True)
         elif not pos.get("skip_noted"):
+            pos["too_small"] = True
             pos["skip_noted"] = True
             notify("⚠️", "SELL SKIPPED",
                    f"{sym} | below pair minimums | qty {num(q)}")
@@ -294,7 +296,7 @@ async def place_sell(c, pos, meta):
     for price, post in ((target, po), (best_ask, False)):
         if price <= 0:
             continue
-        cid, err = await place(c, sym, "sell", q, price, post_only=po)
+        cid, err = await place(c, sym, "sell", q, price, post_only=post)
         if cid:
             pos["sell_cid"], pos["ask_px"] = cid, price
             pos["better"], pos["ask_at"] = {}, time.time()
@@ -442,6 +444,7 @@ async def main():
         adopt_q = list(adopt)
         pos = {}
         carry = {}
+        dust = {}
         pending_resync = not boot_ok
         next_scan = 0.0
         next_fallback = 0.0
@@ -550,7 +553,7 @@ async def main():
                     pos = {"symbol": sym, "qty": qty, "qty0": qty0 or qty,
                            "buy_px": basis if basis is not None
                            else COST_BASIS.get(sym, Decimal(0)),
-                           "sell_cid": None, "better": {}}
+                           "sell_cid": None, "better": {}, "since": now}
                     state = "selling"
                     carry[sym] = (pos["buy_px"], pos["qty0"])
                     notify("♻️", "ADOPT",
@@ -562,6 +565,25 @@ async def main():
                     if now >= next_scan:
                         next_scan = now + SCAN_SECONDS
                         rows = await scan_books(c, pairs)
+                        ours = [o for o in rest_open_orders().get("orders", [])
+                                if str(o.get("clientOrderId", "")).startswith("gap1-")]
+                        held = []
+                        for r in rest_balances():
+                            psym = r.get("symbol", "") + "-" + QUOTE
+                            qty = Decimal(r.get("trading") or 0)
+                            if r.get("symbol") == QUOTE or qty <= 0:
+                                continue
+                            if psym not in pairs or dust.get(psym) == qty:
+                                continue
+                            held.append(r)
+                        if held and not adopt_q:
+                            adopt_q.extend((r["symbol"] + "-" + QUOTE,
+                                            Decimal(r["trading"])) for r in held)
+                            notify("♻️", "ADOPT QUEUED",
+                                   f"{len(held)} position(s) to sell back | "
+                                   + ", ".join(f"{r['symbol']} {num(r['trading'])}"
+                                               for r in held),
+                                   wallet())
                         picked, tag = None, ""
                         gaps = [r for r in rows
                                 if r[0] >= GAP_MIN_PCT
@@ -579,12 +601,6 @@ async def main():
                                 next_fallback = now + FALLBACK_COOLDOWN
                         if picked:
                             gap, sym, bid, ask, bid_usd, ask_usd = picked
-                            ours = [o for o in rest_open_orders().get("orders", [])
-                                    if str(o.get("clientOrderId", "")).startswith("gap1-")]
-                            held = [r for r in rest_balances()
-                                    if r.get("symbol") != QUOTE
-                                    and Decimal(r.get("trading") or 0) > 0
-                                    and (r.get("symbol") + "-" + QUOTE) in pairs]
                             hot, chg = False, Decimal(0)
                             if ours or held:
                                 try:
@@ -661,16 +677,20 @@ async def main():
                     st, cum, avg = await order_state(c, sym, pos["buy_cid"],
                                                      m["scale"])
                     if st in TERMINAL:
-                        pos["qty"] = floor_step(await base_balance(c, sym, m), m["step"])
-                        if pos["qty"] > 0:
-                            pos["qty0"] = pos["qty"]
+                        held_qty = floor_step(await base_balance(c, sym, m), m["step"])
+                        qty = held_qty or floor_step(cum, m["step"])
+                        if st == "filled" or cum > 0:
+                            pos["qty"] = qty
+                            pos["qty0"] = qty
                             pos["buy_px"] = avg if avg > 0 else pos["buy_px"]
+                            pos["since"] = now
                             carry[sym] = (pos["buy_px"], pos["qty0"])
                             notify("✅", "BUY FILLED",
                                    f"{sym} | {num(pos['qty'])} @ {num(pos['buy_px'])}",
                                    wallet(sym.split("-")[0]))
                             state = "selling"
                         else:
+                            pos["qty"] = held_qty
                             notify("⚠️", "BUY UNFILLED",
                                    f"{sym} | order ended {st}",
                                    wallet(sym.split("-")[0]))
@@ -688,9 +708,11 @@ async def main():
                                f"| cancelled",
                                wallet(sym.split("-")[0]))
                         pos["qty"] = floor_step(await base_balance(c, sym, m), m["step"])
-                        if pos["qty"] > 0:
+                        if pos["qty"] > 0 or cum > 0:
+                            pos["qty"] = pos["qty"] or floor_step(cum, m["step"])
                             pos["qty0"] = pos["qty"]
                             pos["buy_px"] = avg if avg > 0 else pos["buy_px"]
+                            pos["since"] = now
                             carry[sym] = (pos["buy_px"], pos["qty0"])
                             notify("✅", "BUY FILLED",
                                    f"{sym} | {num(pos['qty'])} @ {num(pos['buy_px'])}",
@@ -704,12 +726,29 @@ async def main():
                     m = meta[sym]
                     held, avail = rest_asset_balance(sym.split("-")[0])
                     price_est = pos.get("last_avg") or pos.get("ask_px") or Decimal(0)
-                    if held < m["min_qty"] or (price_est > 0 and
+                    if held > 0:
+                        pos["seen"] = True
+                    if held <= 0 and not pos.get("seen"):
+                        if now - pos.get("since", 0) < BALANCE_GRACE:
+                            pass
+                        else:
+                            cycle_done(sym, price_est)
+                    elif held < m["min_qty"] or (price_est > 0 and
                                                held * price_est < m["min_notional"]):
+                        if held > 0:
+                            dust[sym] = held
                         cycle_done(sym, price_est)
                     elif pos["sell_cid"] is None:
                         pos["qty"] = min(pos.get("qty") or held, held)
-                        await place_sell(c, pos, meta)
+                        placed = await place_sell(c, pos, meta)
+                        if placed:
+                            pos["too_small"] = False
+                        elif pos.get("too_small"):
+                            dust[sym] = held
+                            notify("⚠️", "DUST",
+                                   f"{sym} | {num(held)} left | too small to sell",
+                                   wallet(sym.split("-")[0]))
+                            pos, state = {}, "idle"
                     else:
                         st, cum, avg = await order_state(c, sym, pos["sell_cid"], m["scale"])
                         if avg and avg > 0:
