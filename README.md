@@ -42,7 +42,7 @@ polyester-bot
 **pip** — straight from the release tag:
 
 ```bash
-pip install "polyester-bot @ git+https://github.com/natanim-kemal/polyester-bot.git@v1.0.0"
+pip install "polyester-bot @ git+https://github.com/natanim-kemal/polyester-bot.git@v1.0.1"
 polyester-bot
 ```
 
