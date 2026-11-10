@@ -18,8 +18,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-import nacl.signing
-
 if __package__:
     from .paths import HOME_ENV, STATE_DIR, env_files
 else:
@@ -87,6 +85,8 @@ def merge_env(path, values):
 
 def signed_get(path, key_id, seed):
     """GET a signed endpoint with the given key id and hex seed."""
+    import nacl.signing
+
     ts = str(int(time.time() * 1000))
     canon = "\n".join([ts, "GET", path, "", hashlib.sha256(b"").hexdigest()])
     signature = nacl.signing.SigningKey(bytes.fromhex(seed)).sign(
