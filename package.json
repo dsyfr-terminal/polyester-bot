@@ -1,6 +1,6 @@
 {
   "name": "polyester-bot",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Polyester testnet gap hunter: buys orderbook gaps, asks them back, alerts on Telegram",
   "keywords": [
     "polyester",
@@ -34,7 +34,8 @@
     "pyproject.toml",
     "bot/*.py",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "polyester-bot.png"
   ],
   "engines": {
     "node": ">=14"
