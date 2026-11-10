@@ -27,9 +27,9 @@ import urllib.request
 import uuid
 
 if __package__:
-    from .paths import env_file, state_file
+    from .paths import env_files, state_file
 else:
-    from paths import env_file, state_file
+    from paths import env_files, state_file
 
 API = "https://api.testnet.polyester.com"
 SITE = "https://testnet.polyester.com"
@@ -38,16 +38,17 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 
 
 def load_env():
-    """Load KEY=VALUE pairs from .env next to this script (no override)."""
-    try:
-        with open(env_file(), encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, _, v = line.partition("=")
-                    os.environ.setdefault(k.strip(), v.strip())
-    except OSError:
-        pass
+    """Load KEY=VALUE pairs from every .env the bot reads (no override)."""
+    for path in env_files():
+        try:
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, _, v = line.partition("=")
+                        os.environ.setdefault(k.strip(), v.strip())
+        except OSError:
+            pass
 
 
 load_env()

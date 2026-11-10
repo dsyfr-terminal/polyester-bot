@@ -7,21 +7,22 @@ from decimal import Decimal
 from polyester import POLYESTER_TESTNET_ENVIRONMENT, AsyncPolyester
 
 if __package__:
-    from .paths import env_file
+    from .paths import env_files
 else:
-    from paths import env_file
+    from paths import env_files
 
 
 def load_env():
-    try:
-        with open(env_file(), encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, _, v = line.partition("=")
-                    os.environ.setdefault(k.strip(), v.strip())
-    except OSError:
-        pass
+    for path in env_files():
+        try:
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, _, v = line.partition("=")
+                        os.environ.setdefault(k.strip(), v.strip())
+        except OSError:
+            pass
 
 
 load_env()

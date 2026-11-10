@@ -35,21 +35,22 @@ except Exception:
     pass
 
 if __package__:
-    from .paths import HERE, env_file, state_file
+    from .paths import HERE, env_files, state_file
 else:
-    from paths import HERE, env_file, state_file
+    from paths import HERE, env_files, state_file
 
 
 def load_env():
-    try:
-        with open(env_file(), encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, _, v = line.partition("=")
-                    os.environ.setdefault(k.strip(), v.strip())
-    except OSError:
-        pass
+    for path in env_files():
+        try:
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, _, v = line.partition("=")
+                        os.environ.setdefault(k.strip(), v.strip())
+        except OSError:
+            pass
 
 
 load_env()
@@ -59,7 +60,7 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
 KEY = os.environ.get("POLYESTER_API_KEY_ID", "")
 _SK = nacl.signing.SigningKey(bytes.fromhex(os.environ.get("POLYESTER_ED25519_SEED", "0" * 64)))
-ACCOUNT = os.environ.get("POLYESTER_ACCOUNT_ID", "MUYiAxF1Kkv")
+ACCOUNT = os.environ.get("POLYESTER_ACCOUNT_ID", "")
 
 QUOTE = "USDT"
 RT_FEE_PCT = Decimal("0.20")
@@ -199,6 +200,22 @@ def rest_balances():
     req.add_header("X-API-SIGNATURE", _SK.sign(canon.encode()).signature.hex())
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read())["balances"]
+
+
+def rest_me():
+    """GET /v1/auth/me via signed REST (the account this key belongs to)."""
+    ts = str(int(time.time() * 1000))
+    path = "/v1/auth/me"
+    canon = "\n".join([ts, "GET", path, "", hashlib.sha256(b"").hexdigest()])
+    req = urllib.request.Request(API + path, method="GET")
+    req.add_header("User-Agent", UA)
+    req.add_header("Accept", "application/json")
+    req.add_header("Origin", "https://testnet.polyester.com")
+    req.add_header("X-API-KEY-ID", KEY)
+    req.add_header("X-API-TIMESTAMP", ts)
+    req.add_header("X-API-SIGNATURE", _SK.sign(canon.encode()).signature.hex())
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read() or b"{}")
 
 
 async def place(c, sym, side, qty, price, post_only=False):
@@ -354,10 +371,16 @@ async def base_balance(c, sym, m):
 
 
 async def main():
+    global ACCOUNT
     last_wall, last_mono = time.time(), time.monotonic()
     c = None
     for attempt in range(12):
         try:
+            if not ACCOUNT:
+                ACCOUNT = str((rest_me() or {}).get("accountId") or "")
+                if not ACCOUNT:
+                    raise RuntimeError("the exchange returned no account id")
+                print("account:", ACCOUNT, flush=True)
             c = AsyncPolyester(environment=POLYESTER_TESTNET_ENVIRONMENT,
                                api_key_id=KEY,
                                api_private_key=os.environ["POLYESTER_ED25519_SEED"],
@@ -801,6 +824,13 @@ async def main():
 
 
 def cli():
+    if sys.argv[1:2] == ["setup"]:
+        if __package__:
+            from .setup import cli as setup_cli
+        else:
+            from setup import cli as setup_cli
+        setup_cli()
+        return
     missing = [k for k in ("POLYESTER_API_KEY_ID", "POLYESTER_ED25519_SEED")
                if not os.environ.get(k, "").strip()]
     if missing:

@@ -10,16 +10,17 @@ import urllib.error
 import nacl.signing
 
 if __package__:
-    from .paths import env_file
+    from .paths import env_files
 else:
-    from paths import env_file
+    from paths import env_files
 
-with open(env_file(), encoding="utf-8") as f:
-    for line in f:
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, _, v = line.partition("=")
-            os.environ.setdefault(k.strip(), v.strip())
+for path in env_files():
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, _, v = line.partition("=")
+                os.environ.setdefault(k.strip(), v.strip())
 
 KEY = os.environ["POLYESTER_API_KEY_ID"]
 sk = nacl.signing.SigningKey(bytes.fromhex(os.environ["POLYESTER_ED25519_SEED"]))

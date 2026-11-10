@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="polyester.jpg" alt="Polyester" width="120" height="120" style="border-radius:50%; object-fit:cover;" />
+<img src="polyester-bot.png" alt="Polyester" width="120" height="120" style="border-radius:50%; object-fit:cover;" />
 
-# ✦ Polyester Gap Hunter
+# Polyester Gap Hunter
 
 **Testnet market-making bot · one position at a time · Telegram alerts · GitHub Actions deploy**
 
@@ -36,14 +36,14 @@ scan pairs → find gap → BUY at the bid → ASK under the offer → CYCLE DON
 
 ```bash
 npm install -g polyester-bot
-polyester-bot
+polyester-bot setup
 ```
 
 **pip** — straight from the release tag:
 
 ```bash
-pip install "polyester-bot @ git+https://github.com/natanim-kemal/polyester-bot.git@v1.0.1"
-polyester-bot
+pip install "polyester-bot @ git+https://github.com/natanim-kemal/polyester-bot.git@v1.1.0"
+polyester-bot setup
 ```
 
 **source**:
@@ -52,19 +52,45 @@ polyester-bot
 git clone https://github.com/natanim-kemal/polyester-bot.git
 cd polyester-bot
 pip install -e .
+polyester-bot setup
 ```
 
-Python 3.11 or newer. The bot reads its credentials from a `.env` in the
-directory you run it in — copy `bot/.env.example` to `.env` and fill it in:
+Python 3.11 or newer.
 
-```
-POLYESTER_API_KEY_ID=...
-POLYESTER_ED25519_SEED=...
-TELEGRAM_BOT_TOKEN=...
-TELEGRAM_CHAT_ID=...
+## Setup
+
+One command walks you through the credentials and leaves a working `.env` behind:
+
+```bash
+polyester-bot setup
 ```
 
-`POLYESTER_STATE_DIR` moves that directory somewhere else. The bot trades
+It asks for:
+
+| Question | Where to get it |
+| --- | --- |
+| Polyester API key id (`ak_...`) | Polyester dashboard → API keys |
+| Ed25519 seed (64 hex chars or base64) | the same API key, shown once when you create it |
+| Telegram bot token | [@BotFather](https://t.me/BotFather) → `/newbot` |
+| Telegram chat id | send `/start` to your bot; the wizard finds it, or paste the id |
+| EOA private key | optional, only for the daily paper-asset claim |
+
+The account id is **not** asked for: the wizard signs a `GET /v1/auth/me` with
+your key and derives it. The exchange and Telegram are both checked before
+anything is written, and the wizard sends one test message so you know the
+alerts will arrive.
+
+Credentials land in `~/.polyester-bot/.env` (and in a `.env` next to the bot if
+one is already there), never in the git repository. The bot reads the working
+directory first, then the home copy, so it works from anywhere.
+
+Run the bot the same way:
+
+```bash
+polyester-bot
+```
+
+`POLYESTER_STATE_DIR` moves the working directory somewhere else. The bot trades
 **testnet** funds only.
 
 ## Project Structure
@@ -72,6 +98,7 @@ TELEGRAM_CHAT_ID=...
 ```
 ├── bot/
 │   ├── monitor.py            # the bot: scanner, executor, bail-out rule
+│   ├── setup.py              # guided setup: ask, check, write the .env
 │   ├── polyester_farm.py     # season volume, daily paper-asset claim
 │   ├── paths.py              # where .env and the state files live
 │   ├── check_orders.py       # print open orders
@@ -91,13 +118,15 @@ TELEGRAM_CHAT_ID=...
 ├── tests/
 │   ├── test_sell_loop.py        # regression test for the cancel storm
 │   ├── test_freeze_detect.py    # detects a paused sandbox from clock skew
-│   └── test_paths.py            # .env and state file resolution
+│   ├── test_paths.py            # .env and state file resolution
+│   ├── test_stuck.py            # a filled buy survives a lagging balance
+│   └── test_setup.py            # the setup wizard and account derivation
 ├── .github/workflows/
 │   ├── deploy.yml               # push to main → deploy to the sandbox
 │   └── keepalive.yml            # every 10 min: keep the sandbox awake
 ├── pyproject.toml            # the Python package (pip install .)
 ├── package.json              # the npm package (npm install -g polyester-bot)
-└── polyester.jpg
+└── polyester-bot.png
 ```
 
 ## Configuration
@@ -207,7 +236,15 @@ existing state file is never moved.
 python tests/test_paths.py
 ```
 
-All three run in CI on every push, before anything is deployed, together with a
+`tests/test_stuck.py` replays the bug where a filled buy was invisible because
+the balance lagged behind the order, which froze the bot for hours. It fails on
+the old code and passes on the new.
+
+`tests/test_setup.py` checks the setup wizard: seed formats, the `.env` merge,
+the home copy, and that the bot asks the exchange for its account id instead of
+having one baked in.
+
+All five run in CI on every push, before anything is deployed, together with a
 build of the Python package and a smoke test of its entry point.
 
 ## Ops

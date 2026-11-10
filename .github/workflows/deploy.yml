@@ -41,6 +41,7 @@ jobs:
           python3 tests/test_freeze_detect.py
           python3 tests/test_paths.py
           python3 tests/test_stuck.py
+          python3 tests/test_setup.py
 
       - name: Configure SSH
         env:
