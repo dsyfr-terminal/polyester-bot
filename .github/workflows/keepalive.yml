@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: polyester-keepalive
+  group: polyester-keepalive-2
   cancel-in-progress: false
 
 jobs:
