@@ -465,6 +465,27 @@ async def cancel_tp_trigger(c, pos):
         pos["tp_tid"] = None
 
 
+FALLBACK_CANDIDATES = 4
+
+
+async def pick_best_liquid(c, fb, top=FALLBACK_CANDIDATES):
+    """Among the tightest fallback candidates prefer the one whose tape is
+    alive; an unreadable tape counts as zero flow. Ties keep gap order."""
+    if not fb:
+        return None
+    best, best_n = None, -1
+    for row in fb[:top]:
+        try:
+            tr = await c.market_data.get_trades(symbol=row[1], limit=20)
+            n = len(tr.trades)
+        except Exception as e:
+            print("trade count skip", row[1], repr(e), flush=True)
+            n = 0
+        if n > best_n:
+            best, best_n = row, n
+    return best or fb[0]
+
+
 WS_BOOKS = {}
 
 
@@ -901,7 +922,10 @@ async def main():
                             if FALLBACK_SYMBOL:
                                 fb = [r for r in fb if r[1] == FALLBACK_SYMBOL]
                             if fb:
-                                picked, tag = fb[0], "VOLUME"
+                                if FALLBACK_SYMBOL:
+                                    picked, tag = fb[0], "VOLUME"
+                                else:
+                                    picked, tag = await pick_best_liquid(c, fb), "VOLUME"
                                 next_fallback = now + FALLBACK_COOLDOWN
                         if picked:
                             gap, sym, bid, ask, bid_usd, ask_usd = picked
