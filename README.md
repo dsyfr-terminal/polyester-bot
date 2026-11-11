@@ -20,12 +20,17 @@ scan pairs → find gap → BUY at the bid → ASK under the offer → CYCLE DON
 ```
 
 - **Gap mode** — buys the bid, asks one tick under the offer (maker on both legs).
-  A gap must clear the `0.20%` round-trip fee, so `GAP_MIN_PCT` defaults to `0.21%`.
+  Fees are read from the exchange (VIP tier) every 30 min; the gap floor follows
+  them (`2 x maker + GAP_MARGIN_PCT`, `0.11%` at VIP3). An explicit `GAP_MIN_PCT`
+  pins it instead.
 - **Volume fallback** — when nothing clears the fee bar, the deepest tightest pair is
-  cycled anyway to keep season volume up.
-- **Bail-out rule** — if more than `BETTER_ASKS_LIMIT` better asks sit under our
-  price for `PERSIST_SECONDS`, the ask is cancelled and re-placed under them
-  (maker exit, even at a loss). It then rests until the rule fires again.
+  cycled anyway to keep season volume up. A saturation ladder cuts the waiting:
+  after `SAT_PENNY_AFTER` consecutive unfilled fallback buys it pennies the bid,
+  after `SAT_TAKER_AFTER` it buys at the ask (taker fee), and the buy timeout
+  shrinks to `FALLBACK_BUY_TIMEOUT`.
+- **Chase rule (both sides)** — if `BETTER_ASKS_LIMIT` better asks (sell) or
+  `BETTER_BIDS_LIMIT` better bids (buy) beat our price for `PERSIST_SECONDS`,
+  the order is cancelled and re-placed one tick more aggressive than them.
 - **One position** — never stacks trades; the exception is a `>20%` 24h mover.
 - **Volume tracker** — every cycle adds to `volume_state.json`, milestone alert
   every 10,000 USDT.
@@ -136,13 +141,19 @@ The real file stays on the machine and is gitignored — a deploy never overwrit
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `GAP_MIN_PCT` | `0.21` | minimum spread to take in gap mode |
+| `GAP_MIN_PCT` | fee-driven (`0.11`) | minimum spread to take in gap mode |
+| `GAP_MARGIN_PCT` | `0.01` | profit margin added on top of the round-trip fee |
+| `FEES_REFRESH_SECONDS` | `1800` | how often per-pair fees are re-read from the exchange |
 | `DEPTH_MIN_USD` | `50` | minimum depth on both sides |
 | `SCAN_SECONDS` | `10` | how often to scan for a gap |
 | `POLL_SECONDS` | `2` | how often to manage the open position |
-| `PERSIST_SECONDS` | `60` | how long better asks must persist before the bail-out fires |
-| `BETTER_ASKS_LIMIT` | `2` | how many better asks trigger the bail-out |
+| `PERSIST_SECONDS` | `60` | how long better prices must persist before a chase fires |
+| `BETTER_ASKS_LIMIT` | `1` | better asks under our ask that trigger the sell chase |
+| `BETTER_BIDS_LIMIT` | `1` | better bids over our bid that trigger the buy chase |
 | `BUY_TIMEOUT_SECONDS` | `180` | cancel an unfilled buy after this long |
+| `SAT_PENNY_AFTER` | `2` | consecutive fallback buy timeouts before penny bids |
+| `SAT_TAKER_AFTER` | `4` | consecutive fallback buy timeouts before buying at the ask |
+| `FALLBACK_BUY_TIMEOUT` | `60` | fallback buy timeout once the ladder is engaged |
 | `FREEZE_SECONDS` | `300` | wall-vs-monotonic clock skew that counts as a paused sandbox |
 | `STALL_SECONDS` | `900` | how long the loop may hang before it counts as a pause |
 | `FALLBACK_*` | see example | volume fallback mode |
