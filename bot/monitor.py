@@ -486,6 +486,25 @@ async def pick_best_liquid(c, fb, top=FALLBACK_CANDIDATES):
     return best or fb[0]
 
 
+async def preflight_buy(c, sym, side, qty, price):
+    """Ask the exchange whether the buy would be admissible. Fail-open: only
+    a clear rejection blocks; an outage proceeds."""
+    try:
+        res = await c.orders.preview_order(symbol=sym, side=side,
+                                           order_type="limit", tif="gtc",
+                                           qty=format(qty, "f"),
+                                           price=format(price, "f"))
+        adm = getattr(res, "admissible", None)
+        if adm is None or adm:
+            return True, None
+        rej = getattr(res, "rejection", None)
+        code = getattr(rej, "code", None) or getattr(rej, "message", None) or "rejected"
+        return False, str(code)
+    except Exception as e:
+        print("pre-flight failed (proceeding):", repr(e), flush=True)
+        return True, None
+
+
 WS_BOOKS = {}
 
 
@@ -1022,7 +1041,16 @@ async def main():
                                          if r.get("symbol") == QUOTE), Decimal(0))
                             q = floor_step(usdt / (price * FEE_BUFFER), m["step"])
                             if q > 0 and q >= m["min_qty"] and q * price >= m["min_notional"]:
-                                cid, err = await place(c, sym, "buy", q, price)
+                                pv_ok, pv_why = await preflight_buy(c, sym, "buy", q, price)
+                                cid = None
+                                if not pv_ok:
+                                    if now >= next_block_alert:
+                                        next_block_alert = now + 600
+                                        notify("⚠️", "SKIPPED",
+                                               f"{sym} | {tag} | pre-flight: {pv_why}",
+                                               wallet(sym.split("-")[0]))
+                                else:
+                                    cid, err = await place(c, sym, "buy", q, price)
                                 if cid:
                                     pos = {"symbol": sym, "buy_cid": cid, "buy_px": price,
                                            "buy_at": now, "qty": None,
