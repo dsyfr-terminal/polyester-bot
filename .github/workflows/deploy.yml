@@ -51,6 +51,7 @@ jobs:
           python3 tests/test_ws.py
           python3 tests/test_liquidity.py
           python3 tests/test_equity.py
+          python3 tests/test_preflight.py
 
       - name: Configure SSH
         env:
