@@ -45,6 +45,7 @@ jobs:
           python3 tests/test_setup.py
           python3 tests/test_fees.py
           python3 tests/test_chase.py
+          python3 tests/test_deadman.py
 
       - name: Configure SSH
         env:
