@@ -133,6 +133,7 @@ check("the timeout clock restarts after a chase",
 cancel_calls.clear()
 placed.clear()
 alerts.clear()
+monitor.WS_BOOKS.clear()
 c2 = FakeC(["0.1689"], ["0.1690"])
 p2 = new_pos(Decimal("0.1688"))
 asyncio.run(step(c2, p2, 100.0))
@@ -146,10 +147,13 @@ placed.clear()
 c = FakeC(["0.1671"], ["0.1690"])
 pos = new_pos(Decimal("0.1670"))
 asyncio.run(step(c, pos, 100.0))                    # competitor appears
+monitor.WS_BOOKS.clear()
 c.orderbook._bids = []
 asyncio.run(step(c, pos, 130.0))                    # leaves before persisting
 c.orderbook._bids = ["0.1671"]
+monitor.WS_BOOKS.clear()
 asyncio.run(step(c, pos, 140.0))                    # returns, clock restarts
+monitor.WS_BOOKS.clear()
 asyncio.run(step(c, pos, 155.0))                    # only 15s old again
 check("a flickering competitor never triggers a chase",
       cancel_calls == [] and placed == [],
@@ -177,6 +181,7 @@ def state_branch(name):
     raise AssertionError("branch %r not found" % name)
 
 
+monitor.WS_BOOKS.clear()
 alerts2 = []
 ns = {
     "Decimal": Decimal, "ROUND_FLOOR": ROUND_FLOOR, "time": time,
@@ -187,6 +192,7 @@ ns = {
     "rest_asset_balance": lambda base: (Decimal("100"), Decimal("100")),
     "rest_open_orders": lambda: {"orders": []},
     "ClientOrderId": monitor.ClientOrderId,
+    "book": monitor.book,
     "pdec": monitor.pdec, "floor_step": monitor.floor_step,
     "money": monitor.money, "num": monitor.num,
     "dust": {}, "carry": {}, "TERMINAL": monitor.TERMINAL,
