@@ -46,11 +46,12 @@ class FakeC:
         self.orders = FakeOrders()
 
 
-check("DEADMAN_TIMEOUT defaults to 300 seconds", monitor.DEADMAN_TIMEOUT == 300)
+check("DEADMAN_TIMEOUT defaults within the exchange cap",
+      monitor.DEADMAN_TIMEOUT == 120)
 check("DEADMAN_REFRESH is tighter than the timeout",
       0 < monitor.DEADMAN_REFRESH < monitor.DEADMAN_TIMEOUT)
 check("re-arm passes the timeout to the exchange",
-      asyncio.run(monitor.deadman_rearm(FakeC())) is True and calls == [300],
+      asyncio.run(monitor.deadman_rearm(FakeC())) is True and calls == [120],
       str(calls))
 check("a failing exchange does not crash the loop",
       asyncio.run(monitor.deadman_rearm(type("C", (), {})())) is False)
