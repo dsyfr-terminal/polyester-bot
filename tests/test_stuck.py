@@ -70,7 +70,14 @@ def fake_notify(emoji, action, *lines):
     alerts.append(action + " " + " ".join(lines))
 
 
-def fake_cycle_done(sym, px):
+tp_placed = []
+
+
+async def fake_place_tp_trigger(c, pos, m):
+    tp_placed.append(pos["symbol"])
+
+
+async def fake_cycle_done(sym, px):
     cycle_done_calls.append(sym)
 
 
@@ -112,6 +119,8 @@ def build_ns():
         "carry": {}, "dust": {}, "adopt_q": [],
         "state": "buying", "now": 100.0,
         "sat": {"n": 0},
+        "place_tp_trigger": fake_place_tp_trigger,
+        "meta": META,
         "QUOTE": "USDT", "GAP_MIN_PCT": Decimal("0.21"),
         "DEPTH_MIN_USD": Decimal("50"), "SCAN_SECONDS": 10.0,
         "FALLBACK_MIN_GAP_PCT": Decimal("0.05"), "FALLBACK_DEPTH_MIN_USD": Decimal("1000"),

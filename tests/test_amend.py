@@ -199,6 +199,10 @@ async def open_state(c, sym, cid, scale):
     return "open", MONEY0, Decimal("0")
 
 
+async def fake_cycle_done3(sym, px):
+    pass
+
+
 def run_sell(fail_modify):
     alerts.clear()
     cancels.clear()
@@ -206,7 +210,7 @@ def run_sell(fail_modify):
     ns = {
         "Decimal": Decimal, "ROUND_FLOOR": ROUND_FLOOR, "time": time,
         "notify": lambda emoji, action, *lines: alerts.append(action),
-        "cycle_done": lambda sym, px: None,
+        "cycle_done": fake_cycle_done3,
         "wallet": lambda base=None: "USDT 2.99",
         "order_state": open_state,
         "rest_asset_balance": lambda base: (Decimal("100"), Decimal("100")),

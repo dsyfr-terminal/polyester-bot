@@ -47,6 +47,7 @@ jobs:
           python3 tests/test_chase.py
           python3 tests/test_deadman.py
           python3 tests/test_amend.py
+          python3 tests/test_tp_trigger.py
 
       - name: Configure SSH
         env:

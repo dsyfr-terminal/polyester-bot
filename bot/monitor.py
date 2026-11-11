@@ -81,6 +81,7 @@ FALLBACK_PENNY = os.environ.get("FALLBACK_PENNY", "0") == "1"
 SAT_PENNY_AFTER = int(os.environ.get("SAT_PENNY_AFTER", "2"))
 SAT_TAKER_AFTER = int(os.environ.get("SAT_TAKER_AFTER", "4"))
 FALLBACK_BUY_TIMEOUT = float(os.environ.get("FALLBACK_BUY_TIMEOUT", "60"))
+TP_TRIGGER_PCT = Decimal(os.environ.get("TP_TRIGGER_PCT", "2.0"))
 SCAN_SECONDS = float(os.environ.get("SCAN_SECONDS", "10"))
 POLL_SECONDS = float(os.environ.get("POLL_SECONDS", "2"))
 PERSIST_SECONDS = float(os.environ.get("PERSIST_SECONDS", "60"))
@@ -393,6 +394,77 @@ async def chase_buy(c, pos, m, now):
     # a failed or unneeded re-place is reconciled by the terminal/timeout paths
 
 
+async def place_tp_trigger(c, pos, m):
+    """Arm a server-side take-profit sell: the exchange dumps the position
+    itself when price rallies TP_TRIGGER_PCT above entry, bot frozen or not."""
+    if TP_TRIGGER_PCT <= 0:
+        return None
+    sym = pos["symbol"]
+    qty = floor_step(pos.get("qty") or Decimal(0), m["step"])
+    if qty <= 0 or qty < m["min_qty"]:
+        return None
+    basis = pos.get("buy_px") or Decimal(0)
+    ref = basis
+    if ref <= 0:
+        try:
+            book = await c.orderbook.get(symbol=sym, depth=1)
+            ref = pdec(book.asks[0].price) if book.asks else Decimal(0)
+        except Exception as e:
+            print("tp trigger skipped: book unreadable:", repr(e), flush=True)
+            return None
+    if ref <= 0:
+        return None
+    tp = ref * (1 + TP_TRIGGER_PCT / 100)
+    if qty * tp < m["min_notional"]:
+        return None
+    cid = "gap1-tp-" + uuid.uuid4().hex[:12]
+    try:
+        res = await c.triggers.create(symbol=sym, trigger_type="take_profit",
+                                      side="sell", qty=format(qty, "f"),
+                                      trigger_price=format(tp, "f"),
+                                      order_type="market",
+                                      client_trigger_id=cid)
+        pos["tp_cid"] = cid
+        pos["tp_tid"] = getattr(res, "trigger_id", None)
+        notify("🎯", "TP ARMED",
+               f"{sym} | exchange sells {num(qty)} @ {num(tp)} "
+               f"| entry {num(ref)}")
+        return res
+    except Exception as e:
+        print("tp trigger failed:", repr(e), flush=True)
+        return None
+
+
+async def cancel_stale_symbol_orders(c, sym):
+    """Cancel our own gap1- orders resting on this symbol. The TP trigger can
+    beat our own ask to the fill; a leftover sell would be unbacked."""
+    try:
+        stale = [o for o in rest_open_orders().get("orders", [])
+                 if str(o.get("clientOrderId", "")).startswith("gap1-")
+                 and o.get("symbol") == sym]
+        for o in stale:
+            try:
+                await c.orders.cancel(key=ClientOrderId(o["clientOrderId"]),
+                                      symbol=sym)
+            except Exception:
+                pass
+        return len(stale)
+    except Exception as e:
+        print("stale order sweep failed:", repr(e), flush=True)
+        return 0
+
+
+async def cancel_tp_trigger(c, pos):
+    """Best-effort disarm once the cycle closes."""
+    tid = pos.get("tp_tid")
+    if tid is not None:
+        try:
+            await c.triggers.cancel(trigger_id=tid)
+        except Exception:
+            pass
+        pos["tp_tid"] = None
+
+
 async def scan_books(c, pairs):
     """Every USDT pair with a two-sided book: (gap_pct, sym, bid, ask, bid$, ask$)."""
     rows = []
@@ -673,9 +745,11 @@ async def main():
             except OSError:
                 pass
 
-        def cycle_done(sym, sell_px):
+        async def cycle_done(sym, sell_px):
             """Close a cycle from balance truth; alert with balances + volume."""
             nonlocal vol, next_10k, pos, state
+            await cancel_tp_trigger(c, pos)
+            await cancel_stale_symbol_orders(c, sym)
             base_sym = sym.split("-")[0]
             base_held, _ = rest_asset_balance(base_sym)
             qty0 = pos.get("qty0") or pos.get("qty") or Decimal(0)
@@ -738,6 +812,8 @@ async def main():
                            "sell_cid": None, "better": {}, "since": now}
                     state = "selling"
                     carry[sym] = (pos["buy_px"], pos["qty0"])
+                    if sym in meta:
+                        await place_tp_trigger(c, pos, meta[sym])
                     notify("♻️", "ADOPT",
                            f"{sym} {num(qty)} | basis "
                            f"{num(pos['buy_px']) if pos['buy_px'] else 'unknown'}",
@@ -883,6 +959,7 @@ async def main():
                             notify("✅", "BUY FILLED",
                                    f"{sym} | {num(pos['qty'])} @ {num(pos['buy_px'])}",
                                    wallet(sym.split("-")[0]))
+                            await place_tp_trigger(c, pos, m)
                             state = "selling"
                         else:
                             pos["qty"] = held_qty
@@ -916,6 +993,7 @@ async def main():
                                 notify("✅", "BUY FILLED",
                                        f"{sym} | {num(pos['qty'])} @ {num(pos['buy_px'])}",
                                        wallet(sym.split("-")[0]))
+                                await place_tp_trigger(c, pos, m)
                                 state = "selling"
                             else:
                                 state = "idle"
@@ -933,12 +1011,12 @@ async def main():
                         if now - pos.get("since", 0) < BALANCE_GRACE:
                             pass
                         else:
-                            cycle_done(sym, price_est)
+                            await cycle_done(sym, price_est)
                     elif held < m["min_qty"] or (price_est > 0 and
                                                held * price_est < m["min_notional"]):
                         if held > 0:
                             dust[sym] = held
-                        cycle_done(sym, price_est)
+                        await cycle_done(sym, price_est)
                     elif pos["sell_cid"] is None:
                         pos["qty"] = min(pos.get("qty") or held, held)
                         placed = await place_sell(c, pos, meta)
