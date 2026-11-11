@@ -95,6 +95,7 @@ async def open_state(c, sym, cid, scale):
 monitor.place = fake_place
 monitor.order_state = open_state
 monitor.notify = lambda emoji, action, *lines: alerts.append(action)
+monitor.wallet = lambda base=None: "USDT 2.99"
 
 
 def new_pos(buy_px):
