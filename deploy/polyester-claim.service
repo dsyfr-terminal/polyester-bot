@@ -8,3 +8,5 @@ Type=oneshot
 User=user
 WorkingDirectory=/data/workspace/polyester
 ExecStart=/data/workspace/polyester/.venv/bin/python polyester_farm.py claim
+Restart=on-failure
+RestartSec=60
