@@ -507,6 +507,48 @@ async def book(c, sym, depth=10, max_age=15.0):
     return bk
 
 
+async def equity_report(c):
+    """Daily equity line from real balances x fresh mids; keeps its own snapshot."""
+    try:
+        total = Decimal(0)
+        parts = []
+        for row in rest_balances():
+            sym0 = row.get("symbol")
+            amt = Decimal(row.get("trading") or 0)
+            if amt <= 0:
+                continue
+            if sym0 == QUOTE:
+                total += amt
+                continue
+            psym = sym0 + "-" + QUOTE
+            try:
+                bk = await book(c, psym, depth=1)
+                if bk.bids and bk.asks:
+                    mid = (pdec(bk.bids[0].price) + pdec(bk.asks[0].price)) / 2
+                    total += amt * mid
+                    parts.append(f"{sym0} {money(amt * mid)}")
+            except Exception:
+                print("equity skip", sym0, flush=True)
+        prev = None
+        try:
+            with open(state_file("equity_state.json"), encoding="utf-8") as f:
+                prev = Decimal(json.load(f)["equity"])
+        except (OSError, ValueError, KeyError):
+            pass
+        delta = f" | 24h {total - prev:+.2f} USDT" if prev is not None else " | no prior snapshot"
+        notify("📈", "EQUITY",
+               f"total {money(total)} USDT{delta}",
+               " | ".join(parts) or "all in USDT")
+        try:
+            with open(state_file("equity_state.json"), "w",
+                      encoding="utf-8") as f:
+                json.dump({"equity": str(total)}, f)
+        except OSError:
+            pass
+    except Exception as e:
+        print("equity report failed:", repr(e), flush=True)
+
+
 async def run_books_ws(c, ids, stop):
     """Feed WS_BOOKS continuously, one subscription per pair; REST stays the
     fallback when a stream goes quiet. ids maps symbol -> symbolId."""
@@ -767,6 +809,7 @@ async def main():
         next_fees = 0.0
         fees_seen = False
         last_deadman = 0.0
+        last_equity_day = ""
 
         vol, next_10k = None, None
         try:
@@ -1178,6 +1221,10 @@ async def main():
                 if DEADMAN_TIMEOUT > 0 and now - last_deadman >= DEADMAN_REFRESH:
                     last_deadman = now
                     await deadman_rearm(c)
+                today = time.strftime("%Y-%m-%d", time.gmtime())
+                if today != last_equity_day:
+                    last_equity_day = today
+                    await equity_report(c)
             except Exception as e:
                 print("loop error:", repr(e), flush=True)
             await asyncio.sleep(POLL_SECONDS)
