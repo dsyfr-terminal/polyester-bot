@@ -24,16 +24,31 @@ scan pairs → find gap → BUY at the bid → ASK under the offer → CYCLE DON
   them (`2 x maker + GAP_MARGIN_PCT`, `0.11%` at VIP3). An explicit `GAP_MIN_PCT`
   pins it instead.
 - **Volume fallback** — when nothing clears the fee bar, the deepest tightest pair is
-  cycled anyway to keep season volume up. A saturation ladder cuts the waiting:
+  cycled anyway to keep season volume up. The candidate with real trade flow wins
+  over the widest dead spread. A saturation ladder cuts the waiting:
   after `SAT_PENNY_AFTER` consecutive unfilled fallback buys it pennies the bid,
   after `SAT_TAKER_AFTER` it buys at the ask (taker fee), and the buy timeout
   shrinks to `FALLBACK_BUY_TIMEOUT`.
 - **Chase rule (both sides)** — if `BETTER_ASKS_LIMIT` better asks (sell) or
   `BETTER_BIDS_LIMIT` better bids (buy) beat our price for `PERSIST_SECONDS`,
-  the order is cancelled and re-placed one tick more aggressive than them.
+  the resting order is **amended** one tick more aggressive than them — one
+  atomic call, no unfilled window. A cancel happens only when the amend cannot.
+- **Dead-man switch** — `orders.cancel_all_after` is re-armed every 60 s; if the
+  bot dies or freezes without re-arming, the exchange cancels all our orders itself.
+- **Pre-flight check** — before a buy is placed, `orders.preview_order` asks the
+  exchange whether it would be admissible; only a clear rejection blocks
+  (throttled, never an outage blocking trades).
+- **Websocket books** — every pair's orderbook is streamed live (`orderbook.subscribe`);
+  readers prefer the fresh cache and fall back to REST when it goes quiet.
 - **One position** — never stacks trades; the exception is a `>20%` 24h mover.
 - **Volume tracker** — every cycle adds to `volume_state.json`, milestone alert
   every 10,000 USDT.
+- **Daily equity line** — once a day one `EQUITY` alert: total in USDT (balances ×
+  fresh mids), per-position breakdown, 24 h delta vs yesterday's snapshot
+  (`equity_state.json`).
+- **TP triggers** — `TP_TRIGGER_PCT` arms a full-size server-side take-profit on a held
+  position; the trigger reserves the whole inventory while armed, so the bot cannot
+  sell alongside it. Off by default.
 
 ## Install
 
@@ -102,7 +117,7 @@ polyester-bot
 
 ```
 ├── bot/
-│   ├── monitor.py            # the bot: scanner, executor, bail-out rule
+│   ├── monitor.py            # the bot: scanner, executor, chase rule
 │   ├── setup.py              # guided setup: ask, check, write the .env
 │   ├── polyester_farm.py     # season volume, daily paper-asset claim
 │   ├── paths.py              # where .env and the state files live
@@ -120,12 +135,21 @@ polyester-bot
 │   ├── polyester-claim.service  # daily paper-asset claim
 │   ├── polyester-claim.timer    # 00:10 UTC, persistent
 │   └── deploy.sh                # install code + units, restart
-├── tests/
-│   ├── test_sell_loop.py        # regression test for the cancel storm
+├── tests/                    # 14 suites, all run in CI before any deploy:
+│   ├── test_sell_loop.py        # the re-ask/cancel machine, end to end
 │   ├── test_freeze_detect.py    # detects a paused sandbox from clock skew
 │   ├── test_paths.py            # .env and state file resolution
 │   ├── test_stuck.py            # a filled buy survives a lagging balance
-│   └── test_setup.py            # the setup wizard and account derivation
+│   ├── test_setup.py            # the setup wizard and account derivation
+│   ├── test_fees.py             # fee math, gap floor and entry ladder
+│   ├── test_chase.py            # both sides chase; sell trigger on one better ask
+│   ├── test_amend.py            # chase amends in place, cancel only as fallback
+│   ├── test_tp_trigger.py       # server-side take-profit triggers (opt-in)
+│   ├── test_ws.py               # websocket orderbook feed with REST fallback
+│   ├── test_liquidity.py        # fallback prefers a live tape over a wide dead book
+│   ├── test_equity.py           # daily equity report from balances x mids
+│   ├── test_preflight.py        # admissibility check before a buy is placed
+│   └── test_orphan.py           # orphan-clear runs hourly, not every poll
 ├── .github/workflows/
 │   ├── deploy.yml               # push to main → deploy to the sandbox
 │   └── keepalive.yml            # every 10 min: keep the sandbox awake
@@ -154,6 +178,8 @@ The real file stays on the machine and is gitignored — a deploy never overwrit
 | `SAT_PENNY_AFTER` | `2` | consecutive fallback buy timeouts before penny bids |
 | `SAT_TAKER_AFTER` | `4` | consecutive fallback buy timeouts before buying at the ask |
 | `FALLBACK_BUY_TIMEOUT` | `60` | fallback buy timeout once the ladder is engaged |
+| `DEADMAN_TIMEOUT` | `300` | auto-cancel window re-armed every 60s; `0` disables |
+| `TP_TRIGGER_PCT` | `0` | arm server-side take-profit on sell entry; `0` = never arm |
 | `FREEZE_SECONDS` | `300` | wall-vs-monotonic clock skew that counts as a paused sandbox |
 | `STALL_SECONDS` | `900` | how long the loop may hang before it counts as a pause |
 | `FALLBACK_*` | see example | volume fallback mode |
@@ -219,44 +245,35 @@ journalctl -u polyester-claim.service
 
 ## Tests
 
-`tests/test_sell_loop.py` replays the sell state machine against a fake exchange.
-It reproduces the bug where the bot cancelled the ask it had just placed — the
-`canceling` flag was never cleared once the order reached a terminal state, so
-every re-ask was cancelled again on the next poll.
-
-```bash
-python tests/test_sell_loop.py
-```
-
-Exits non-zero if the bot cancels more than once per bail-out.
-
-`tests/test_freeze_detect.py` pulls the real freeze-detection code out of
-`bot/monitor.py` and drives it: a normal poll does nothing, the real 1h47m
-pause triggers a re-sync, a stalled loop triggers it too, and an unreachable
-exchange keeps the position instead of forgetting it.
-
-```bash
-python tests/test_freeze_detect.py
-```
-
-`tests/test_paths.py` checks where the bot looks for its `.env` and its state
-files: the working directory wins, the script directory is the fallback, and an
-existing state file is never moved.
-
-```bash
-python tests/test_paths.py
-```
-
-`tests/test_stuck.py` replays the bug where a filled buy was invisible because
-the balance lagged behind the order, which froze the bot for hours. It fails on
-the old code and passes on the new.
-
-`tests/test_setup.py` checks the setup wizard: seed formats, the `.env` merge,
-the home copy, and that the bot asks the exchange for its account id instead of
-having one baked in.
-
-All five run in CI on every push, before anything is deployed, together with a
+All 14 suites run in CI on every push, before anything is deployed, together with a
 build of the Python package and a smoke test of its entry point.
+`python tests/test_<name>.py` runs any one locally.
+
+```bash
+for t in tests/test_*.py; do python "$t" || exit 1; done
+```
+
+Exits non-zero on the first failing suite. Coverage map:
+
+`test_sell_loop.py` replays the sell state machine against a fake exchange — the
+bug where the bot cancelled the ask it had just placed.
+`test_freeze_detect.py` drives the freeze guard — the real 1h47m pause triggers a
+re-sync, an unreachable exchange keeps the position.
+`test_stuck.py` replays the bug where a filled buy was invisible because the
+balance lagged behind the order.
+`test_setup.py` checks the setup wizard and that the account id is derived, never
+baked in.
+`test_paths.py` checks `.env` and state file resolution.
+`test_fees.py` pins the fee math: the gap floor, the entry ladder, cycle fees.
+`test_chase.py` checks both sides chase one tick past the competitor, and the
+flicking-competitor guard.
+`test_amend.py` checks orders amend atomically and cancel only when unavoidable.
+`test_tp_trigger.py` arms a server-side take-profit when enabled (off by default).
+`test_ws.py` checks the websocket book feed populates the cache and REST falls back.
+`test_liquidity.py` checks the fallback prefers a live tape.
+`test_equity.py` checks the daily equity report and its snapshot file.
+`test_preflight.py` checks the admissibility check blocks a clear rejection only.
+`test_orphan.py` checks the orphan-clear runs hourly, not every poll.
 
 ## Ops
 
