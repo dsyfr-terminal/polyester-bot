@@ -87,6 +87,8 @@ PERSIST_SECONDS = float(os.environ.get("PERSIST_SECONDS", "60"))
 BETTER_ASKS_LIMIT = int(os.environ.get("BETTER_ASKS_LIMIT", "1"))
 BETTER_BIDS_LIMIT = int(os.environ.get("BETTER_BIDS_LIMIT", "1"))
 BUY_TIMEOUT_SECONDS = float(os.environ.get("BUY_TIMEOUT_SECONDS", "180"))
+DEADMAN_TIMEOUT = int(os.environ.get("DEADMAN_TIMEOUT", "300"))
+DEADMAN_REFRESH = 60
 FEE_BUFFER = Decimal("1.0015")
 FREEZE_SECONDS = float(os.environ.get("FREEZE_SECONDS", "300"))
 STALL_SECONDS = float(os.environ.get("STALL_SECONDS", "900"))
@@ -135,6 +137,17 @@ def buy_timeout_for(tag, sat_n):
     if tag != "GAP" and sat_n >= SAT_PENNY_AFTER:
         return FALLBACK_BUY_TIMEOUT
     return BUY_TIMEOUT_SECONDS
+
+
+async def deadman_rearm(c):
+    """Re-arm the exchange-side auto-cancel: if the bot stops re-arming,
+    every open order is cancelled once the deadline passes."""
+    try:
+        await c.orders.cancel_all_after(timeout_sec=DEADMAN_TIMEOUT)
+        return True
+    except Exception as e:
+        print("deadman re-arm failed:", repr(e), flush=True)
+        return False
 
 
 async def refresh_fees(c):
@@ -597,6 +610,7 @@ async def main():
         sat = {"n": 0}
         next_fees = 0.0
         fees_seen = False
+        last_deadman = 0.0
 
         vol, next_10k = None, None
         try:
@@ -974,6 +988,9 @@ async def main():
                                f"{FEES[s0][1]}% taker",
                                f"gap floor {GAP_MIN_PCT}% | {len(FEES)} pairs "
                                f"| {wallet()}")
+                if DEADMAN_TIMEOUT > 0 and now - last_deadman >= DEADMAN_REFRESH:
+                    last_deadman = now
+                    await deadman_rearm(c)
             except Exception as e:
                 print("loop error:", repr(e), flush=True)
             await asyncio.sleep(POLL_SECONDS)
