@@ -92,6 +92,10 @@ async def open_state(c, sym, cid, scale):
     return "open", Decimal(0), Decimal(0)
 
 
+async def fake_cycle_done2(sym, px):
+    pass
+
+
 monitor.place = fake_place
 monitor.order_state = open_state
 monitor.notify = lambda emoji, action, *lines: alerts.append(action)
@@ -177,7 +181,7 @@ alerts2 = []
 ns = {
     "Decimal": Decimal, "ROUND_FLOOR": ROUND_FLOOR, "time": time,
     "notify": lambda emoji, action, *lines: alerts2.append(action),
-    "cycle_done": lambda sym, px: None,
+    "cycle_done": fake_cycle_done2,
     "wallet": lambda base=None: "USDT 2.99",
     "order_state": open_state,
     "rest_asset_balance": lambda base: (Decimal("100"), Decimal("100")),
