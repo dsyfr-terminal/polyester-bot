@@ -354,6 +354,23 @@ async def chase_buy(c, pos, m, now):
         new_px = min(new_px, top - m["tick"])
     if new_px <= pos["buy_px"]:
         return
+    st, cum, avg = await order_state(c, sym, pos["buy_cid"], m["scale"])
+    left = floor_step((pos.get("qty_target") or Decimal(0))
+                      - floor_step(cum, m["step"]), m["step"])
+    if st not in TERMINAL:
+        try:
+            await c.orders.modify(key=ClientOrderId(pos["buy_cid"]),
+                                  symbol=sym, new_price=new_px)
+            pos["buy_px"] = new_px
+            pos["buy_at"] = now
+            pos["better"] = {}
+            notify("🔄", "BID CHASE",
+                   f"{sym} | outbid by {aged} bid(s) held {PERSIST_SECONDS:.0f}s "
+                   f"| amending to {num(new_px)}",
+                   wallet(sym.split("-")[0]))
+            return
+        except Exception as e:
+            print("amend fell back to cancel:", repr(e), flush=True)
     try:
         await c.orders.cancel(key=ClientOrderId(pos["buy_cid"]), symbol=sym)
     except Exception:
@@ -966,17 +983,39 @@ async def main():
                             aged = sum(1 for p, t0 in track.items()
                                        if now - t0 >= PERSIST_SECONDS)
                             if aged >= BETTER_ASKS_LIMIT:
-                                try:
-                                    await c.orders.cancel(key=ClientOrderId(pos["sell_cid"]),
-                                                          symbol=sym)
-                                except Exception:
-                                    pass
-                                notify("⚠️", "ASK BAIL-OUT",
-                                       f"{sym} | {aged} better asks held "
-                                       f"{PERSIST_SECONDS:.0f}s | re-asking under them",
-                                       wallet(sym.split("-")[0]))
-                                pos["canceling"] = True
-                                pos["bail"] = True
+                                asks2 = [pdec(a.price) for a in (book.asks or [])
+                                         if pdec(a.price) > 0]
+                                new_px = min(asks2) - m["tick"] if asks2 else None
+                                amended = False
+                                if new_px is not None and new_px != pos["ask_px"]:
+                                    try:
+                                        await c.orders.modify(
+                                            key=ClientOrderId(pos["sell_cid"]),
+                                            symbol=sym, new_price=new_px)
+                                        pos["ask_px"] = new_px
+                                        pos["better"] = {}
+                                        pos["bail"] = True
+                                        notify("🔄", "ASK CHASE",
+                                               f"{sym} | {aged} better ask(s) held "
+                                               f"{PERSIST_SECONDS:.0f}s | "
+                                               f"amending to {num(new_px)}",
+                                               wallet(sym.split("-")[0]))
+                                        amended = True
+                                    except Exception as e:
+                                        print("amend fell back to cancel:", repr(e),
+                                              flush=True)
+                                if not amended and new_px != pos["ask_px"]:
+                                    try:
+                                        await c.orders.cancel(key=ClientOrderId(pos["sell_cid"]),
+                                                              symbol=sym)
+                                    except Exception:
+                                        pass
+                                    notify("⚠️", "ASK BAIL-OUT",
+                                           f"{sym} | {aged} better asks held "
+                                           f"{PERSIST_SECONDS:.0f}s | re-asking under them",
+                                           wallet(sym.split("-")[0]))
+                                    pos["canceling"] = True
+                                    pos["bail"] = True
                 if now >= next_fees:
                     next_fees = now + FEES_REFRESH_SECONDS
                     await refresh_fees(c)
