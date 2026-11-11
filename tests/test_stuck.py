@@ -111,6 +111,7 @@ def build_ns():
         "pairs": META,
         "carry": {}, "dust": {}, "adopt_q": [],
         "state": "buying", "now": 100.0,
+        "sat": {"n": 0},
         "QUOTE": "USDT", "GAP_MIN_PCT": Decimal("0.21"),
         "DEPTH_MIN_USD": Decimal("50"), "SCAN_SECONDS": 10.0,
         "FALLBACK_MIN_GAP_PCT": Decimal("0.05"), "FALLBACK_DEPTH_MIN_USD": Decimal("1000"),
