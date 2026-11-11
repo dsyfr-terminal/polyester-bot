@@ -81,7 +81,7 @@ FALLBACK_PENNY = os.environ.get("FALLBACK_PENNY", "0") == "1"
 SAT_PENNY_AFTER = int(os.environ.get("SAT_PENNY_AFTER", "2"))
 SAT_TAKER_AFTER = int(os.environ.get("SAT_TAKER_AFTER", "4"))
 FALLBACK_BUY_TIMEOUT = float(os.environ.get("FALLBACK_BUY_TIMEOUT", "60"))
-TP_TRIGGER_PCT = Decimal(os.environ.get("TP_TRIGGER_PCT", "2.0"))
+TP_TRIGGER_PCT = Decimal(os.environ.get("TP_TRIGGER_PCT", "0"))
 SCAN_SECONDS = float(os.environ.get("SCAN_SECONDS", "10"))
 POLL_SECONDS = float(os.environ.get("POLL_SECONDS", "2"))
 PERSIST_SECONDS = float(os.environ.get("PERSIST_SECONDS", "60"))
@@ -643,6 +643,10 @@ async def place_sell(c, pos, meta):
         held = None
     if q <= 0 or q * best_ask < min_not:
         if held and held * best_ask >= min_not:
+            last = pos.get("orphan_noted")
+            if last is not None and time.time() - last < 3600:
+                return False
+            pos["orphan_noted"] = time.time()
             try:
                 await c.orders.cancel_all(symbol=sym,
                                           request_id="gap1-ca-" + uuid.uuid4().hex[:10])
