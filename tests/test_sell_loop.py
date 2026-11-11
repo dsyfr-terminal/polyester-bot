@@ -167,6 +167,10 @@ class FakeClient:
         self.orderbook = FakeOrderbook()
 
 
+async def fake_book(c, sym, depth=10, max_age=15.0):
+    return await c.orderbook.get(symbol=sym, depth=depth)
+
+
 ns = {
     "Decimal": Decimal, "time": time, "uuid": uuid, "ROUND_FLOOR": ROUND_FLOOR,
     "place": fake_place, "order_state": fake_order_state,
@@ -175,6 +179,7 @@ ns = {
     "alert": fake_alert, "cycle_done": fake_cycle_done,
     "wallet": lambda base=None: "USDT 100",
     "ClientOrderId": ClientOrderId,
+    "book": fake_book,
     "PERSIST_SECONDS": 60.0, "BETTER_ASKS_LIMIT": 2,
     "TERMINAL": {"filled", "canceled", "rejected", "expired"},
 }
