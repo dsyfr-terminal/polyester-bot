@@ -207,6 +207,7 @@ def run_sell(fail_modify):
     alerts.clear()
     cancels.clear()
     modifies.clear()
+    monitor.WS_BOOKS.clear()
     ns = {
         "Decimal": Decimal, "ROUND_FLOOR": ROUND_FLOOR, "time": time,
         "notify": lambda emoji, action, *lines: alerts.append(action),
@@ -216,6 +217,7 @@ def run_sell(fail_modify):
         "rest_asset_balance": lambda base: (Decimal("100"), Decimal("100")),
         "rest_open_orders": lambda: {"orders": []},
         "ClientOrderId": monitor.ClientOrderId,
+        "book": monitor.book,
         "pdec": monitor.pdec, "floor_step": monitor.floor_step,
         "money": monitor.money, "num": monitor.num,
         "dust": {}, "carry": {}, "TERMINAL": monitor.TERMINAL,
