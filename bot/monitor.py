@@ -63,24 +63,98 @@ _SK = nacl.signing.SigningKey(bytes.fromhex(os.environ.get("POLYESTER_ED25519_SE
 ACCOUNT = os.environ.get("POLYESTER_ACCOUNT_ID", "")
 
 QUOTE = "USDT"
-RT_FEE_PCT = Decimal("0.20")
-GAP_MIN_PCT = Decimal(os.environ.get("GAP_MIN_PCT", "0.21"))
+# Real per-pair fees, read from the exchange every 30 min (observed VIP3:
+# maker 0.05 / taker 0.105). An explicit GAP_MIN_PCT env still pins the floor.
+DEFAULT_MAKER_PCT = Decimal("0.05")
+DEFAULT_TAKER_PCT = Decimal("0.105")
+GAP_MARGIN_PCT = Decimal(os.environ.get("GAP_MARGIN_PCT", "0.01"))
+GAP_MIN_FIXED = (Decimal(os.environ["GAP_MIN_PCT"])
+                 if os.environ.get("GAP_MIN_PCT") else None)
+FEES = {}
+FEES_REFRESH_SECONDS = float(os.environ.get("FEES_REFRESH_SECONDS", "1800"))
 DEPTH_MIN_USD = Decimal(os.environ.get("DEPTH_MIN_USD", "50"))
 FALLBACK_SYMBOL = os.environ.get("FALLBACK_SYMBOL", "").strip()
 FALLBACK_MIN_GAP_PCT = Decimal(os.environ.get("FALLBACK_MIN_GAP_PCT", "0.05"))
 FALLBACK_DEPTH_MIN_USD = Decimal(os.environ.get("FALLBACK_DEPTH_MIN_USD", "1000"))
 FALLBACK_COOLDOWN = float(os.environ.get("FALLBACK_COOLDOWN", "60"))
 FALLBACK_PENNY = os.environ.get("FALLBACK_PENNY", "0") == "1"
+SAT_PENNY_AFTER = int(os.environ.get("SAT_PENNY_AFTER", "2"))
+SAT_TAKER_AFTER = int(os.environ.get("SAT_TAKER_AFTER", "4"))
+FALLBACK_BUY_TIMEOUT = float(os.environ.get("FALLBACK_BUY_TIMEOUT", "60"))
 SCAN_SECONDS = float(os.environ.get("SCAN_SECONDS", "10"))
 POLL_SECONDS = float(os.environ.get("POLL_SECONDS", "2"))
 PERSIST_SECONDS = float(os.environ.get("PERSIST_SECONDS", "60"))
-BETTER_ASKS_LIMIT = int(os.environ.get("BETTER_ASKS_LIMIT", "2"))
+BETTER_ASKS_LIMIT = int(os.environ.get("BETTER_ASKS_LIMIT", "1"))
+BETTER_BIDS_LIMIT = int(os.environ.get("BETTER_BIDS_LIMIT", "1"))
 BUY_TIMEOUT_SECONDS = float(os.environ.get("BUY_TIMEOUT_SECONDS", "180"))
 FEE_BUFFER = Decimal("1.0015")
 FREEZE_SECONDS = float(os.environ.get("FREEZE_SECONDS", "300"))
 STALL_SECONDS = float(os.environ.get("STALL_SECONDS", "900"))
 BALANCE_GRACE = float(os.environ.get("BALANCE_GRACE_SECONDS", "120"))
 HEARTBEAT = "/var/tmp/polyester.heartbeat"
+
+
+def maker_fee_pct(fees, sym):
+    """Maker fee % for one pair, falling back to the observed VIP3 rate."""
+    return (fees.get(sym) or (DEFAULT_MAKER_PCT, DEFAULT_TAKER_PCT))[0]
+
+
+def taker_fee_pct(fees, sym):
+    return (fees.get(sym) or (DEFAULT_MAKER_PCT, DEFAULT_TAKER_PCT))[1]
+
+
+def rt_fee_pct(fees, sym):
+    """Round-trip % for two maker legs."""
+    return 2 * maker_fee_pct(fees, sym)
+
+
+def gap_min_pct(fixed, fees=None, sym=None):
+    """Profitable-gap floor: an explicit GAP_MIN_PCT wins, else 2 x maker + margin."""
+    if fixed is not None:
+        return fixed
+    return 2 * maker_fee_pct(fees or FEES, sym) + GAP_MARGIN_PCT
+
+
+def round_trip_fees(buy_usd, sell_usd, maker_pct):
+    """USDT fees for a maker round trip at maker_pct percent per leg."""
+    return (buy_usd + sell_usd) * maker_pct / 100
+
+
+def entry_price(tag, bid, ask, m, penny, taker):
+    """Where the BUY rests: gap buys always penny, a calm fallback joins the
+    bid, and the saturation ladder pennies then crosses the spread."""
+    if taker:
+        return ask
+    if tag == "GAP" or penny:
+        return min(bid + m["tick"], ask - m["tick"])
+    return bid
+
+
+def buy_timeout_for(tag, sat_n):
+    """Fallbacks on the saturation ladder stop waiting sooner."""
+    if tag != "GAP" and sat_n >= SAT_PENNY_AFTER:
+        return FALLBACK_BUY_TIMEOUT
+    return BUY_TIMEOUT_SECONDS
+
+
+async def refresh_fees(c):
+    """Pull the exchange's real per-pair fee rates; keep the gap floor in step."""
+    global GAP_MIN_PCT
+    try:
+        fr = await c.fees.get_spot_fee_rates()
+        for r in fr.fee_rates:
+            FEES[r.symbol] = (pdec(r.maker_fee_rate_percent),
+                              pdec(r.taker_fee_rate_percent))
+        GAP_MIN_PCT = gap_min_pct(GAP_MIN_FIXED)
+        if FEES:
+            s0 = next(iter(FEES))
+            print(f"fees refreshed: {len(FEES)} pairs | maker {FEES[s0][0]}% "
+                  f"taker {FEES[s0][1]}% | gap floor {GAP_MIN_PCT}%", flush=True)
+    except Exception as e:
+        print("fee refresh failed:", repr(e), flush=True)
+
+
+GAP_MIN_PCT = gap_min_pct(GAP_MIN_FIXED)
 
 
 def frozen_seconds(wall, mono, last_wall, last_mono):
@@ -240,6 +314,53 @@ async def order_state(c, sym, cid, scale):
     if o is None:
         return "pending", Decimal(0), Decimal(0)
     return (str(o.status).lower(), qdec(o.cum_qty, scale), pdec(o.avg_px))
+
+
+async def chase_buy(c, pos, m, now):
+    """Mirror of the ask bail-out: when competitors outbid our resting BUY
+    for too long, cancel and rebid one tick above the best bid, never into
+    the ask. Resets the timeout clock on every chase."""
+    sym = pos["symbol"]
+    book = await c.orderbook.get(symbol=sym, depth=10)
+    better = {pdec(b.price) for b in (book.bids or [])
+              if pdec(b.price) > pos["buy_px"]}
+    track = pos["better"]
+    for p in list(track):
+        if p not in better:
+            del track[p]
+    for p in better:
+        track.setdefault(p, now)
+    aged = sum(1 for p, t0 in track.items() if now - t0 >= PERSIST_SECONDS)
+    if aged < BETTER_BIDS_LIMIT:
+        return
+    best = max(better)
+    new_px = best + m["tick"]
+    top = min((pdec(a.price) for a in (book.asks or []) if pdec(a.price) > 0),
+              default=None)
+    if top is not None:
+        new_px = min(new_px, top - m["tick"])
+    if new_px <= pos["buy_px"]:
+        return
+    try:
+        await c.orders.cancel(key=ClientOrderId(pos["buy_cid"]), symbol=sym)
+    except Exception:
+        pass
+    st, cum, avg = await order_state(c, sym, pos["buy_cid"], m["scale"])
+    left = floor_step((pos.get("qty_target") or Decimal(0))
+                      - floor_step(cum, m["step"]), m["step"])
+    cid = None
+    if left > 0 and left >= m["min_qty"] and left * new_px >= m["min_notional"]:
+        cid, _ = await place(c, sym, "buy", left, new_px)
+    if cid:
+        pos["buy_cid"] = cid
+        pos["buy_px"] = new_px
+        pos["buy_at"] = now
+        pos["better"] = {}
+        notify("🔄", "BID CHASE",
+               f"{sym} | outbid by {aged} bid(s) held {PERSIST_SECONDS:.0f}s "
+               f"| re-bidding {num(left)} @ {num(new_px)}",
+               wallet(sym.split("-")[0]))
+    # a failed or unneeded re-place is reconciled by the terminal/timeout paths
 
 
 async def scan_books(c, pairs):
@@ -457,6 +578,7 @@ async def main():
             return held, True
 
         adopt, boot_ok = await resync("gap1-boot")
+        await refresh_fees(c)
 
         notify("🤖", "GAP HUNTER ONLINE",
                f"gap ≥ {GAP_MIN_PCT}% | depth ≥ {money(DEPTH_MIN_USD)} USDT | "
@@ -472,6 +594,9 @@ async def main():
         next_scan = 0.0
         next_fallback = 0.0
         next_block_alert = 0.0
+        sat = {"n": 0}
+        next_fees = 0.0
+        fees_seen = False
 
         vol, next_10k = None, None
         try:
@@ -528,7 +653,10 @@ async def main():
             basis = pos.get("buy_px") or Decimal(0)
             sell_usd = sell_px * sold
             buy_usd = basis * sold
-            fees = (sell_usd + buy_usd) * Decimal("0.001")
+            mk = maker_fee_pct(FEES, sym)
+            fees = round_trip_fees(buy_usd, sell_usd, mk)
+            if pos.get("buy_fee_pct") and pos["buy_fee_pct"] != mk:
+                fees += buy_usd * (pos["buy_fee_pct"] - mk) / 100
             net = sell_usd - buy_usd - fees
             if sell_px > 0:
                 net_txt = f"net {net:+.2f} USDT"
@@ -660,8 +788,16 @@ async def main():
                         if picked:
                             gap, sym, bid, ask, bid_usd, ask_usd = picked
                             m = meta[sym]
-                            price = bid if (tag == "VOLUME" and not FALLBACK_PENNY) \
-                                else min(bid + m["tick"], ask - m["tick"])
+                            if tag == "GAP":
+                                sat["n"] = 0
+                                penny, take = False, False
+                            else:
+                                penny = FALLBACK_PENNY or sat["n"] >= SAT_PENNY_AFTER
+                                take = sat["n"] >= SAT_TAKER_AFTER
+                            price = entry_price(tag, bid, ask, m, penny, take)
+                            buy_fee = (taker_fee_pct(FEES, sym) if take
+                                       else maker_fee_pct(FEES, sym))
+                            rt = maker_fee_pct(FEES, sym) + buy_fee
                             usdt = next((Decimal(r["available"]) for r in rest_balances()
                                          if r.get("symbol") == QUOTE), Decimal(0))
                             q = floor_step(usdt / (price * FEE_BUFFER), m["step"])
@@ -670,25 +806,29 @@ async def main():
                                 if cid:
                                     pos = {"symbol": sym, "buy_cid": cid, "buy_px": price,
                                            "buy_at": now, "qty": None,
+                                           "qty_target": q, "tag": tag,
+                                           "buy_fee_pct": buy_fee,
                                            "sell_cid": None, "better": {},
                                            "join_ask": tag == "VOLUME"}
                                     state = "buying"
                                     if tag == "GAP":
                                         notify("🟢", "BUY",
                                                f"{sym} | gap {gap:.2f}% "
-                                               f"(net +{gap - RT_FEE_PCT:.2f}%) | "
+                                               f"(net +{gap - rt:.2f}%) | "
                                                f"{num(q)} @ {num(price)} | "
                                                f"depth {money(bid_usd)}/{money(ask_usd)}",
-                                               f"expected +{q * price * (gap - RT_FEE_PCT) / 100:.2f}"
+                                               f"expected +{q * price * (gap - rt) / 100:.2f}"
                                                f" USDT | {wallet(sym.split('-')[0])}")
                                     else:
-                                        loss = q * price * (RT_FEE_PCT - gap) / 100
+                                        loss = q * price * (rt - gap) / 100
+                                        stage = ("taker ask" if take else
+                                                 "penny bid" if penny else "bid")
                                         notify("🟡", "VOLUME BUY",
                                                f"{sym} | gap {gap:.3f}% "
-                                               f"(fee {RT_FEE_PCT}%) | "
+                                               f"(fee {rt}%) | "
                                                f"{num(q)} @ {num(price)} | "
                                                f"volume {money(q * price * 2)} USDT",
-                                               f"expected -{loss:.2f} USDT "
+                                               f"{stage} | expected -{loss:.2f} USDT "
                                                f"| {wallet(sym.split('-')[0])}")
                             else:
                                 notify("⚠️", "SKIPPED",
@@ -708,6 +848,7 @@ async def main():
                             pos["buy_px"] = avg if avg > 0 else pos["buy_px"]
                             pos["since"] = now
                             carry[sym] = (pos["buy_px"], pos["qty0"])
+                            sat["n"] = 0
                             notify("✅", "BUY FILLED",
                                    f"{sym} | {num(pos['qty'])} @ {num(pos['buy_px'])}",
                                    wallet(sym.split("-")[0]))
@@ -718,31 +859,37 @@ async def main():
                                    f"{sym} | order ended {st}",
                                    wallet(sym.split("-")[0]))
                             state = "idle"
-                    elif now - pos["buy_at"] > BUY_TIMEOUT_SECONDS:
-                        try:
-                            await c.orders.cancel(key=ClientOrderId(pos["buy_cid"]),
-                                                  symbol=sym)
-                        except Exception:
-                            pass
-                        st, cum, avg = await order_state(c, sym, pos["buy_cid"],
-                                                         m["scale"])
-                        notify("⚠️", "BUY TIMEOUT",
-                               f"{sym} | no fill after {BUY_TIMEOUT_SECONDS:.0f}s "
-                               f"| cancelled",
-                               wallet(sym.split("-")[0]))
-                        pos["qty"] = floor_step(await base_balance(c, sym, m), m["step"])
-                        if pos["qty"] > 0 or cum > 0:
-                            pos["qty"] = pos["qty"] or floor_step(cum, m["step"])
-                            pos["qty0"] = pos["qty"]
-                            pos["buy_px"] = avg if avg > 0 else pos["buy_px"]
-                            pos["since"] = now
-                            carry[sym] = (pos["buy_px"], pos["qty0"])
-                            notify("✅", "BUY FILLED",
-                                   f"{sym} | {num(pos['qty'])} @ {num(pos['buy_px'])}",
-                                   wallet(sym.split("-")[0]))
-                            state = "selling"
-                        else:
-                            state = "idle"
+                    else:
+                        await chase_buy(c, pos, m, now)
+                        tmo = buy_timeout_for(pos.get("tag", "GAP"), sat["n"])
+                        if now - pos["buy_at"] > tmo:
+                            try:
+                                await c.orders.cancel(key=ClientOrderId(pos["buy_cid"]),
+                                                      symbol=sym)
+                            except Exception:
+                                pass
+                            st, cum, avg = await order_state(c, sym, pos["buy_cid"],
+                                                             m["scale"])
+                            notify("⚠️", "BUY TIMEOUT",
+                                   f"{sym} | no fill after {tmo:.0f}s "
+                                   f"| cancelled",
+                                   f"sat {sat['n']} | {wallet(sym.split('-')[0])}")
+                            pos["qty"] = floor_step(await base_balance(c, sym, m), m["step"])
+                            if pos["qty"] > 0 or cum > 0:
+                                pos["qty"] = pos["qty"] or floor_step(cum, m["step"])
+                                pos["qty0"] = pos["qty"]
+                                pos["buy_px"] = avg if avg > 0 else pos["buy_px"]
+                                pos["since"] = now
+                                carry[sym] = (pos["buy_px"], pos["qty0"])
+                                sat["n"] = 0
+                                notify("✅", "BUY FILLED",
+                                       f"{sym} | {num(pos['qty'])} @ {num(pos['buy_px'])}",
+                                       wallet(sym.split("-")[0]))
+                                state = "selling"
+                            else:
+                                state = "idle"
+                                if pos.get("tag") == "VOLUME":
+                                    sat["n"] += 1
 
                 elif state == "selling":
                     sym = pos["symbol"]
@@ -804,7 +951,7 @@ async def main():
                                 track.setdefault(p, now)
                             aged = sum(1 for p, t0 in track.items()
                                        if now - t0 >= PERSIST_SECONDS)
-                            if aged > BETTER_ASKS_LIMIT:
+                            if aged >= BETTER_ASKS_LIMIT:
                                 try:
                                     await c.orders.cancel(key=ClientOrderId(pos["sell_cid"]),
                                                           symbol=sym)
@@ -816,6 +963,17 @@ async def main():
                                        wallet(sym.split("-")[0]))
                                 pos["canceling"] = True
                                 pos["bail"] = True
+                if now >= next_fees:
+                    next_fees = now + FEES_REFRESH_SECONDS
+                    await refresh_fees(c)
+                    if not fees_seen and FEES:
+                        fees_seen = True
+                        s0 = next(iter(FEES))
+                        notify("💱", "FEES LIVE",
+                               f"VIP fee {FEES[s0][0]}% maker / "
+                               f"{FEES[s0][1]}% taker",
+                               f"gap floor {GAP_MIN_PCT}% | {len(FEES)} pairs "
+                               f"| {wallet()}")
             except Exception as e:
                 print("loop error:", repr(e), flush=True)
             await asyncio.sleep(POLL_SECONDS)
