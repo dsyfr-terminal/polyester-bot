@@ -90,6 +90,10 @@ class FakeC:
 
 monitor.notify = lambda emoji, action, *lines: None
 monitor.wallet = lambda base=None: "USDT 2.99"
+OBSERVED_DEFAULT = monitor.TP_TRIGGER_PCT
+check("TP triggers are opt-in, off by default", OBSERVED_DEFAULT == Decimal(0),
+      str(OBSERVED_DEFAULT))
+monitor.TP_TRIGGER_PCT = Decimal("2.0")
 NEW_PCT = monitor.TP_TRIGGER_PCT
 new_pos = lambda px: {"symbol": "ARB-USDT", "buy_px": px, "qty": Decimal("1000"),
                       "tp_tid": None}

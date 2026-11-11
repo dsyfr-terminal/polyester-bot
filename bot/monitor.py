@@ -81,7 +81,7 @@ FALLBACK_PENNY = os.environ.get("FALLBACK_PENNY", "0") == "1"
 SAT_PENNY_AFTER = int(os.environ.get("SAT_PENNY_AFTER", "2"))
 SAT_TAKER_AFTER = int(os.environ.get("SAT_TAKER_AFTER", "4"))
 FALLBACK_BUY_TIMEOUT = float(os.environ.get("FALLBACK_BUY_TIMEOUT", "60"))
-TP_TRIGGER_PCT = Decimal(os.environ.get("TP_TRIGGER_PCT", "2.0"))
+TP_TRIGGER_PCT = Decimal(os.environ.get("TP_TRIGGER_PCT", "0"))
 SCAN_SECONDS = float(os.environ.get("SCAN_SECONDS", "10"))
 POLL_SECONDS = float(os.environ.get("POLL_SECONDS", "2"))
 PERSIST_SECONDS = float(os.environ.get("PERSIST_SECONDS", "60"))
@@ -486,6 +486,25 @@ async def pick_best_liquid(c, fb, top=FALLBACK_CANDIDATES):
     return best or fb[0]
 
 
+async def preflight_buy(c, sym, side, qty, price):
+    """Ask the exchange whether the buy would be admissible. Fail-open: only
+    a clear rejection blocks; an outage proceeds."""
+    try:
+        res = await c.orders.preview_order(symbol=sym, side=side,
+                                           order_type="limit", tif="gtc",
+                                           qty=format(qty, "f"),
+                                           price=format(price, "f"))
+        adm = getattr(res, "admissible", None)
+        if adm is None or adm:
+            return True, None
+        rej = getattr(res, "rejection", None)
+        code = getattr(rej, "code", None) or getattr(rej, "message", None) or "rejected"
+        return False, str(code)
+    except Exception as e:
+        print("pre-flight failed (proceeding):", repr(e), flush=True)
+        return True, None
+
+
 WS_BOOKS = {}
 
 
@@ -624,6 +643,10 @@ async def place_sell(c, pos, meta):
         held = None
     if q <= 0 or q * best_ask < min_not:
         if held and held * best_ask >= min_not:
+            last = pos.get("orphan_noted")
+            if last is not None and time.time() - last < 3600:
+                return False
+            pos["orphan_noted"] = time.time()
             try:
                 await c.orders.cancel_all(symbol=sym,
                                           request_id="gap1-ca-" + uuid.uuid4().hex[:10])
@@ -1022,7 +1045,16 @@ async def main():
                                          if r.get("symbol") == QUOTE), Decimal(0))
                             q = floor_step(usdt / (price * FEE_BUFFER), m["step"])
                             if q > 0 and q >= m["min_qty"] and q * price >= m["min_notional"]:
-                                cid, err = await place(c, sym, "buy", q, price)
+                                pv_ok, pv_why = await preflight_buy(c, sym, "buy", q, price)
+                                cid = None
+                                if not pv_ok:
+                                    if now >= next_block_alert:
+                                        next_block_alert = now + 600
+                                        notify("⚠️", "SKIPPED",
+                                               f"{sym} | {tag} | pre-flight: {pv_why}",
+                                               wallet(sym.split("-")[0]))
+                                else:
+                                    cid, err = await place(c, sym, "buy", q, price)
                                 if cid:
                                     pos = {"symbol": sym, "buy_cid": cid, "buy_px": price,
                                            "buy_at": now, "qty": None,
