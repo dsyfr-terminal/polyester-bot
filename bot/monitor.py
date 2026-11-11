@@ -335,8 +335,8 @@ async def chase_buy(c, pos, m, now):
     for too long, cancel and rebid one tick above the best bid, never into
     the ask. Resets the timeout clock on every chase."""
     sym = pos["symbol"]
-    book = await c.orderbook.get(symbol=sym, depth=10)
-    better = {pdec(b.price) for b in (book.bids or [])
+    bk = await book(c, sym, depth=10)
+    better = {pdec(b.price) for b in (bk.bids or [])
               if pdec(b.price) > pos["buy_px"]}
     track = pos["better"]
     for p in list(track):
@@ -349,7 +349,7 @@ async def chase_buy(c, pos, m, now):
         return
     best = max(better)
     new_px = best + m["tick"]
-    top = min((pdec(a.price) for a in (book.asks or []) if pdec(a.price) > 0),
+    top = min((pdec(a.price) for a in (bk.asks or []) if pdec(a.price) > 0),
               default=None)
     if top is not None:
         new_px = min(new_px, top - m["tick"])
@@ -407,8 +407,8 @@ async def place_tp_trigger(c, pos, m):
     ref = basis
     if ref <= 0:
         try:
-            book = await c.orderbook.get(symbol=sym, depth=1)
-            ref = pdec(book.asks[0].price) if book.asks else Decimal(0)
+            bk = await book(c, sym, depth=1)
+            ref = pdec(bk.asks[0].price) if bk.asks else Decimal(0)
         except Exception as e:
             print("tp trigger skipped: book unreadable:", repr(e), flush=True)
             return None
@@ -465,20 +465,63 @@ async def cancel_tp_trigger(c, pos):
         pos["tp_tid"] = None
 
 
+WS_BOOKS = {}
+
+
+def ws_book(sym, max_age=15.0):
+    """The last WS book snapshot for sym, if fresh enough to trust."""
+    rec = WS_BOOKS.get(sym)
+    if rec and (time.monotonic() - rec[1]) <= max_age:
+        return rec[0]
+    return None
+
+
+async def book(c, sym, depth=10, max_age=15.0):
+    """Orderbook for one pair: the WS-fed snapshot when fresh, REST otherwise."""
+    cached = ws_book(sym, max_age)
+    if cached is not None:
+        return cached
+    bk = await c.orderbook.get(symbol=sym, depth=depth)
+    WS_BOOKS[sym] = (bk, time.monotonic())
+    return bk
+
+
+async def run_books_ws(c, ids, stop):
+    """Feed WS_BOOKS continuously, one subscription per pair; REST stays the
+    fallback when a stream goes quiet. ids maps symbol -> symbolId."""
+    async def keep_one(sym, symbol_id):
+        while not stop.is_set():
+            try:
+                sub = await c.orderbook.subscribe(symbol=sym,
+                                                  symbol_id=symbol_id, depth=10)
+                async for data in sub:
+                    if getattr(data, "available", True):
+                        WS_BOOKS[sym] = (data, time.monotonic())
+                    if stop.is_set():
+                        break
+            except Exception as e:
+                print("ws book feed", sym, "down:", repr(e), flush=True)
+            try:
+                await asyncio.wait_for(stop.wait(), 5.0)
+            except asyncio.TimeoutError:
+                pass
+    await asyncio.gather(*(keep_one(s, i) for s, i in ids.items()))
+
+
 async def scan_books(c, pairs):
     """Every USDT pair with a two-sided book: (gap_pct, sym, bid, ask, bid$, ask$)."""
     rows = []
     for sym in pairs:
         try:
-            book = await c.orderbook.get(symbol=sym, depth=1)
-            if not book.bids or not book.asks:
+            bk = await book(c, sym, depth=1)
+            if not bk.bids or not bk.asks:
                 continue
-            bid, ask = pdec(book.bids[0].price), pdec(book.asks[0].price)
+            bid, ask = pdec(bk.bids[0].price), pdec(bk.asks[0].price)
             if bid <= 0 or ask <= bid:
                 continue
             gap = (ask - bid) / ((ask + bid) / 2) * 100
-            bid_usd = pdec(book.bids[0].qty) * bid
-            ask_usd = pdec(book.asks[0].qty) * ask
+            bid_usd = pdec(bk.bids[0].qty) * bid
+            ask_usd = pdec(bk.asks[0].qty) * ask
             rows.append((gap, sym, bid, ask, bid_usd, ask_usd))
         except Exception as e:
             print("scan skip", sym, repr(e), flush=True)
@@ -490,11 +533,11 @@ async def place_sell(c, pos, meta):
     sym = pos["symbol"]
     base = sym.split("-")[0]
     tick, step, min_not = meta[sym]["tick"], meta[sym]["step"], meta[sym]["min_notional"]
-    book = await c.orderbook.get(symbol=sym, depth=10)
-    if not book.asks:
+    bk = await book(c, sym, depth=10)
+    if not bk.asks:
         return False
-    best_ask = pdec(book.asks[0].price)
-    best_bid = pdec(book.bids[0].price) if book.bids else Decimal(0)
+    best_ask = pdec(bk.asks[0].price)
+    best_bid = pdec(bk.bids[0].price) if bk.bids else Decimal(0)
     spread = ((best_ask - best_bid) / ((best_ask + best_bid) / 2) * 100
               if best_bid else Decimal(0))
     basis = pos.get("buy_px") or Decimal(0)
@@ -632,6 +675,9 @@ async def main():
                     "min_qty": Decimal(p.get("minQtyBase") or "0"),
                     "scale": int(p.get("baseQuantityScale") or 8)}
                 for s, p in pairs.items()}
+        ws_stop = asyncio.Event()
+        ws_ids = {s: p["symbolId"] for s, p in pairs.items() if "symbolId" in p}
+        ws_task = asyncio.create_task(run_books_ws(c, ws_ids, ws_stop))
 
         async def resync(tag):
             """Cancel our stale orders, re-read balances.
@@ -1049,8 +1095,8 @@ async def main():
                                 pos["sell_cid"] = None
                                 pos["canceling"] = False
                         else:
-                            book = await c.orderbook.get(symbol=sym, depth=10)
-                            better = {pdec(a.price) for a in (book.asks or [])
+                            bk = await book(c, sym, depth=10)
+                            better = {pdec(a.price) for a in (bk.asks or [])
                                       if pdec(a.price) < pos["ask_px"]}
                             track = pos["better"]
                             for p in list(track):
@@ -1061,7 +1107,7 @@ async def main():
                             aged = sum(1 for p, t0 in track.items()
                                        if now - t0 >= PERSIST_SECONDS)
                             if aged >= BETTER_ASKS_LIMIT:
-                                asks2 = [pdec(a.price) for a in (book.asks or [])
+                                asks2 = [pdec(a.price) for a in (bk.asks or [])
                                          if pdec(a.price) > 0]
                                 new_px = min(asks2) - m["tick"] if asks2 else None
                                 amended = False
@@ -1112,6 +1158,11 @@ async def main():
                 print("loop error:", repr(e), flush=True)
             await asyncio.sleep(POLL_SECONDS)
     finally:
+        ws_stop.set()
+        try:
+            await asyncio.wait_for(asyncio.gather(ws_task), 3)
+        except Exception:
+            ws_task.cancel()
         await c.aclose()
 
 
