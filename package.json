@@ -34,8 +34,7 @@
     "pyproject.toml",
     "bot/*.py",
     "LICENSE",
-    "README.md",
-    "polyester-bot.png"
+    "README.md"
   ],
   "engines": {
     "node": ">=14"

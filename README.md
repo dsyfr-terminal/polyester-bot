@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="polyester-bot.png" alt="Polyester" width="120" height="120" style="border-radius:50%; object-fit:cover;" />
+<img src="https://raw.githubusercontent.com/natanim-kemal/polyester-bot/main/polyester-bot.png" alt="Polyester" width="120" height="120" style="border-radius:50%; object-fit:cover;" />
 
 # Polyester Gap Hunter
 
