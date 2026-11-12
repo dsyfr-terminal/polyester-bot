@@ -82,13 +82,6 @@ Every alert is 1 header + 1 fact line + 1 money line (`🟢 BUY` / `🔵 ASK` / 
 for t in tests/test_*.py; do python "$t" || exit 1; done
 ```
 
-## Release history
-
-- **v1.2.0** — live VIP fee rates, buy-side chase with atomic amend, websocket orderbook,
-  liquidity-aware fallback, dead-man switch, daily equity line, opt-in TP triggers,
-  orphan/cycle fixes (found on the live book: 500M SHIB stuck).
-- v1.1.0 — guided setup wizard; test suites; scanner + re-sync.
-
 ## License
 
 MIT
